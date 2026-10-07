@@ -8,6 +8,7 @@ namespace Cli {
 Args ParseArgs(int argc, char* argv[]) {
     Args args;
     bool unusedFilterSpecified = false;
+    bool platformSpecified = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -27,6 +28,17 @@ Args ParseArgs(int argc, char* argv[]) {
                 throw std::runtime_error("unused-filter must be specified once with a value of 0, 1 or 2");
             args.unusedFilterLevel = static_cast<std::uint32_t>(value[0] - '0');
             unusedFilterSpecified = true;
+        } else if (arg == "--platform") {
+            if (i + 1 >= argc)
+                throw std::runtime_error("--platform requires a value");
+            const std::string value = argv[++i];
+            if (platformSpecified)
+                throw std::runtime_error("--platform must be specified at most once");
+            if (value == "auto") args.platform = Domain::GuestPlatformSelection::Auto;
+            else if (value == "ps4") args.platform = Domain::GuestPlatformSelection::Ps4;
+            else if (value == "ps5") args.platform = Domain::GuestPlatformSelection::Ps5;
+            else throw std::runtime_error("--platform must be auto, ps4 or ps5");
+            platformSpecified = true;
         } else if (arg == "--registry") {
             args.writeRegistry = true;
         } else if (arg == "--rpath") {
@@ -65,7 +77,7 @@ Args ParseArgs(int argc, char* argv[]) {
 
     if (args.inputPath.empty() || args.outputPath.empty())
         throw std::runtime_error(
-            "Usage: relinker [--windows] [--windows-diagnostics] [--windows-gui] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
+            "Usage: relinker [--windows] [--windows-diagnostics] [--windows-gui] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [--platform auto|ps4|ps5] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
             "Example: relinker input.elf output.elf"
         );
 

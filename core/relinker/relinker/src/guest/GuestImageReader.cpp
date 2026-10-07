@@ -11,7 +11,7 @@
 
 namespace Relinker {
 
-GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector<std::uint8_t> bytes) const {
+GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector<std::uint8_t> bytes, const Domain::GuestPlatform platform) const {
     const auto fail = [&](const std::string& message) { throw Domain::RelinkerException(path.string() + ": " + message); };
     const auto range = [&](std::uint64_t offset, std::uint64_t size) {
         if (offset > bytes.size() || size > bytes.size() - offset) {
@@ -63,18 +63,22 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     std::map<std::uint64_t, std::uint64_t> tags;
     std::vector<std::uint64_t> needed;
     std::vector<std::uint64_t> moduleImports;
+    std::vector<std::int64_t> dynamicTags;
+    const auto neededModuleTag = static_cast<std::uint64_t>(Domain::PlatformProfile(platform).NeededModuleTag);
     bool terminated = false;
     for (std::uint64_t offset = dynamic->Offset; offset < dynamic->Offset + dynamic->FileSize; offset += 16) {
         const auto tag = Io::ReadU64(bytes, offset);
         const auto value = Io::ReadU64(bytes, offset + 8);
         if (tag == 0) { terminated = true; break; }
+        dynamicTags.push_back(static_cast<std::int64_t>(tag));
         if (tag == 1) needed.push_back(value);
-        else if (tag == 0x61000045) moduleImports.push_back(value);
+        else if (tag == neededModuleTag) moduleImports.push_back(value);
         else if (tag < 0x60000000 || tag == 0x6100003f || (tag >= 0x61000027 && tag <= 0x6100003b)) {
             if (!tags.emplace(tag, value).second) fail("Duplicate dynamic tag " + std::to_string(tag));
         }
     }
     if (!terminated) fail("Unterminated dynamic segment");
+    Domain::RequireGuestPlatform(Domain::GuestPlatformEvidence(dynamicTags, path.string()), platform, "Guest module " + path.string());
     for (const auto unsupported : {15u, 16u, 17u, 18u, 19u, 22u, 35u, 36u, 37u}) {
         if (tags.contains(unsupported)) fail("Unsupported dynamic tag " + std::to_string(unsupported));
     }

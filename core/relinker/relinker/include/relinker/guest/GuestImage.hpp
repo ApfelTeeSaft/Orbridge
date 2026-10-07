@@ -3,6 +3,7 @@
 
 #include <codegen/CodegenTypes.hpp>
 #include <domain/Types.hpp>
+#include <domain/GuestPlatform.hpp>
 #include <relinker/domain/ISyscallScanner.hpp>
 #include <filesystem>
 #include <set>
@@ -44,7 +45,7 @@ struct GuestImage {
 
 class GuestImageReader {
 public:
-    GuestImage Read(const std::filesystem::path& path, std::vector<std::uint8_t> bytes) const;
+    GuestImage Read(const std::filesystem::path& path, std::vector<std::uint8_t> bytes, Domain::GuestPlatform platform) const;
 };
 
 struct GuestArtifact {
@@ -54,7 +55,7 @@ struct GuestArtifact {
 
 class GuestModuleBuilder {
 public:
-    std::vector<GuestArtifact> Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, bool windows, bool toIntel, ISyscallScanner& syscallScanner, bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules) const;
+    std::vector<GuestArtifact> Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, bool windows, bool toIntel, ISyscallScanner& syscallScanner, bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules, Domain::GuestPlatform platform) const;
 };
 
 }

@@ -11,7 +11,7 @@ namespace Relinker {
 
 using namespace Elfpatcher;
 
-RelinkerPipeline::RelinkerPipeline(std::shared_ptr<IElfReader> elfReader, std::shared_ptr<ISyscallScanner> syscallScanner, std::shared_ptr<ICallSiteResolver> callSiteResolver, std::shared_ptr<IValidationPolicy> validationPolicy, std::shared_ptr<ISysVDynamicSectionBuilder> dynamicSectionBuilder, std::shared_ptr<IUnusedNidFilter> unusedNidFilter, std::uint32_t unusedFilterLevel)
+RelinkerPipeline::RelinkerPipeline(std::shared_ptr<IElfReader> elfReader, std::shared_ptr<ISyscallScanner> syscallScanner, std::shared_ptr<ICallSiteResolver> callSiteResolver, std::shared_ptr<IValidationPolicy> validationPolicy, std::shared_ptr<ISysVDynamicSectionBuilder> dynamicSectionBuilder, std::shared_ptr<IUnusedNidFilter> unusedNidFilter, std::uint32_t unusedFilterLevel, Domain::GuestPlatformSelection platformSelection)
     : _elfReader(std::move(elfReader))
     , _syscallScanner(std::move(syscallScanner))
     , _callSiteResolver(std::move(callSiteResolver))
@@ -19,6 +19,7 @@ RelinkerPipeline::RelinkerPipeline(std::shared_ptr<IElfReader> elfReader, std::s
     , _dynamicSectionBuilder(std::move(dynamicSectionBuilder))
     , _unusedNidFilter(std::move(unusedNidFilter))
     , unusedFilterLevel(unusedFilterLevel)
+    , platformSelection(platformSelection)
 {
     if (unusedFilterLevel > 2) throw RelinkerException("Unused NID filter level must be 0, 1 or 2");
 }
@@ -73,6 +74,14 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
 
     if (!hasDynamicSegment)
         throw RelinkerException("No PT_DYNAMIC segment found");
+
+    std::vector<std::int64_t> tagValues;
+    for (const auto& tag : dynTags) tagValues.push_back(tag.Tag);
+    const auto platform = Domain::SelectGuestPlatform(Domain::GuestPlatformEvidence(tagValues, "executable"), platformSelection, "executable");
+    std::cout << Domain::DescribeGuestPlatform(platform) << "\n";
+    if (platform.Platform == Domain::GuestPlatform::Ps4)
+        throw RelinkerException("PS4 executables are not supported yet");
+    const auto& profile = Domain::PlatformProfile(platform.Platform);
 
     auto hasTag = [&](const std::int64_t tag) {
         for (const auto& t : dynTags)
@@ -181,7 +190,7 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
 
     std::map<std::uint64_t, std::string> importModules;
     for (const auto& tag : dynTags) {
-        if (tag.Tag == 0x61000045 && !importModules.emplace(tag.Value >> 48, readCStr(tag.Value & 0xffffffffu)).second)
+        if (tag.Tag == profile.NeededModuleTag && !importModules.emplace(tag.Value >> 48, readCStr(tag.Value & 0xffffffffu)).second)
             throw RelinkerException("Duplicate import module ID");
     }
 
@@ -330,7 +339,7 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
         }
     }
 
-    return RelinkResult{std::move(entries), std::move(programHeaders), std::move(dynSection), gotVAddr, std::move(patches)};
+    return RelinkResult{std::move(entries), std::move(programHeaders), std::move(dynSection), gotVAddr, std::move(patches), platform.Platform};
 }
 
 }

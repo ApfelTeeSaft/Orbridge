@@ -27,11 +27,13 @@ Windows output:
 relinker --windows source/input.elf app.exe
 ```
 
-Add `--to-intel` for Intel hosts. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
+Add `--to-intel` for Intel hosts.
+
+The relinker reads the guest platform from the executable and prints it, for example `Detected guest platform: PS5 (DT_SCE_NEEDED_MODULE 0x61000045)`. Only PS5 executables are converted; a PS4 executable is detected and rejected. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
 
 ## Options
 
-All switches are disabled by default. `unused-filter` defaults to `0`; `--rpath` defaults to `$ORIGIN/libs`.
+All switches are disabled by default. `unused-filter` defaults to `0`; `--platform` defaults to `auto`; `--rpath` defaults to `$ORIGIN/libs`.
 
 | Option                        | Effect                                                                                                                                                                                                                                                                                                                  |
 |-------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -39,6 +41,7 @@ All switches are disabled by default. `unused-filter` defaults to `0`; `--rpath`
 | `--windows-diagnostics`       | Include startup dependency diagnostics. Requires `--windows`.                                                                                                                                                                                                                                                           |
 | `--windows-gui`               | Select the Windows GUI subsystem instead of the console subsystem. Requires `--windows`.                                                                                                                                                                                                                                |
 | `--to-intel`                  | Convert supported AMD-only instructions in the executable and bundled modules. Unsupported instructions or unreachable conversion stubs cause an error.                                                                                                                                                                 |
+| `--platform <value>`          | Select the guest platform: `auto`, `ps4` or `ps5`. `auto` detects it from the SCE module and library tags of the executable and uses PS5 when it has none. `ps4` and `ps5` must agree with the tags when present. Bundled modules must match the executable.                                                            |
 | `unused-filter=0`             | Keep all imported NID references.                                                                                                                                                                                                                                                                                       |
 | `unused-filter=1`             | Filter unused non-PLT imports using control-flow and GOT access analysis; preserve PLT imports.                                                                                                                                                                                                                         |
 | `unused-filter=2`             | Apply strict unused-import analysis and compact the PLT. Unsupported analysis cases cause an error.                                                                                                                                                                                                                     |
