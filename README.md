@@ -6,6 +6,9 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 [Usage](docs/user/USAGE.md), [Build instructions](docs/dev/BUILD.md), [Technical debt of the project](docs/dev/TechnicalDebt.md), [code style conventions](docs/dev/CONVENTIONS.md), [contributing](CONTRIBUTING.md)
 
+Why use AI if your previous projects are all basically the same thing?
+Simple answer: The original repository was also vibecoded and is therefore just a matter of pointing an AI agent into the right direction, AnyPS5's progress was simply possible due to a few technical people getting together and combining their knowledge of the PS5 internals into an AI agent. Since I do not own a PS5 and only a few PS4's along with a semi populated knowledge base in my brain, I thought I could add PS4 support as well.
+
 ## Status
 
 PS5: the relinker, system libraries, AGC driver and shader recompiler are inherited from AnyPS5. Upstream progress is published on the [AnyPS5 progress page](https://boykopovar.github.io/AnyPS5/) (upstream data, not Orbridge's).
