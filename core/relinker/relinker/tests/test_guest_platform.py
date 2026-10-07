@@ -6,12 +6,15 @@ import subprocess
 import sys
 import tempfile
 
+from test_guest_intel_trampolines import pe_sections
 from test_guest_module_directories import module_with_symbol
+from test_ps4_executable import dynamic_entries
 
 PS4_NEEDED_MODULE = 0x6100000F
 PS4_IMPORT_LIB = 0x61000015
 PS5_NEEDED_MODULE = 0x61000045
 PS5_IMPORT_LIB = 0x61000049
+GUEST_PLATFORM_TAG = 0x6F726200
 STRINGS = b"\0libkernel.prx\0libkernel\0"
 MODULE_NAME = STRINGS.index(b"libkernel\0")
 
@@ -43,6 +46,17 @@ def module(tag):
     struct.pack_into("<qQ", image, 0x690, 0, 0)
     struct.pack_into("<QQ", image, 176 + 32, 160, 160)
     return image
+
+
+def platform_marker(output):
+    data = output.read_bytes()
+    if data.startswith(b"MZ"):
+        section = next(section for section in pe_sections(data) if section[0] == b".gplat")
+        return struct.unpack_from("<I", data, section[3])[0]
+    tags = dynamic_entries(data)[0]
+    values = [value for tag, value in tags if tag == GUEST_PLATFORM_TAG]
+    assert len(values) == 1, tags
+    return values[0]
 
 
 def mixed_module():
@@ -78,6 +92,7 @@ def main():
             result, output = convert(name, image, options, modules)
             assert result.returncode == 0 and output.exists(), (name, result.stdout, result.stderr)
             assert diagnostic in result.stdout, (name, result.stdout)
+            assert platform_marker(output) == (4 if "PS4" in diagnostic else 5), name
 
         def fails(name, image, code, message, options=(), modules=None):
             result, output = convert(name, image, options, modules)

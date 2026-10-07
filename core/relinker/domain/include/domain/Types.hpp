@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <domain/GuestPlatformId.hpp>
 #include <domain/GuestRuntime.hpp>
 
 namespace Domain {
@@ -96,6 +97,7 @@ struct SysVDynamicSection {
     std::vector<std::uint8_t> RelaPltData;
     std::vector<GuestRuntime> GuestModules;
     std::map<VirtualAddress, std::string> ImportModules;
+    GuestPlatform Platform = GuestPlatform::Ps5;
 };
 
 struct CallRegistryEntry {

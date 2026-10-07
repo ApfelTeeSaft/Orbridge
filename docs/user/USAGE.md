@@ -29,7 +29,7 @@ relinker --windows source/input.elf app.exe
 
 Add `--to-intel` for Intel hosts.
 
-The relinker reads the guest platform from the executable and prints it, for example `Detected guest platform: PS4 (DT_SCE_NEEDED_MODULE 0x6100000f)`. PS4 executables must be `ET_SCE_DYNEXEC` (`0xfe10`); fixed-address `ET_SCE_EXEC` (`0xfe00`) executables are rejected, and `unused-filter` must be `0`. The system libraries in [core/libs/prx](../../core/libs/prx) implement the PS5 interfaces, so a converted PS4 executable is not expected to run yet. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
+The relinker reads the guest platform from the executable and prints it, for example `Detected guest platform: PS4 (DT_SCE_NEEDED_MODULE 0x6100000f)`. PS4 executables must be `ET_SCE_DYNEXEC` (`0xfe10`); fixed-address `ET_SCE_EXEC` (`0xfe00`) executables are rejected, and `unused-filter` must be `0`. The output records the guest platform for the system libraries; an executable converted by an earlier relinker version lacks it, and a library that needs it throws. The system libraries in [core/libs/prx](../../core/libs/prx) implement the PS5 interfaces, so a converted PS4 executable is not expected to run yet. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
 
 ## Options
 

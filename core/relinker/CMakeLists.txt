@@ -238,6 +238,9 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_guest_platform.py $<TARGET_FILE:relinker>)
         add_test(NAME ps4_executable COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_ps4_executable.py $<TARGET_FILE:relinker>)
+        add_test(NAME guest_platform_runtime COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_guest_platform_runtime.py $<TARGET_FILE:relinker> ${ANYPS5_HOST_LIBRARY_DIRECTORY})
+        set_tests_properties(guest_platform_runtime PROPERTIES SKIP_RETURN_CODE 77)
     else()
         message(STATUS "Python3 interpreter not found; skipping Python relinker tests")
     endif()

@@ -46,7 +46,7 @@ DT_SCE_HASHSZ = 0x6100003D
 DT_SCE_SYMTABSZ = 0x6100003F
 
 TEXT_OFFSET, RELRO_OFFSET, DATA_OFFSET, DYNLIB_OFFSET = 0x4000, 0x8000, 0xC000, 0x10000
-TEXT_ADDRESS, RELRO_ADDRESS, DATA_ADDRESS = 0x0, 0x4000, 0x8000
+TEXT_ADDRESS, RELRO_ADDRESS, DATA_ADDRESS, DYNLIB_ADDRESS = 0x0, 0x4000, 0x8000, 0xC000
 STRTAB, SYMTAB, HASH, JMPREL, RELA, DYNAMIC = 0x100, 0x200, 0x260, 0x280, 0x2A0, 0x400
 ENTRY = 0x10
 GOT_SLOT = RELRO_ADDRESS + 0x18
@@ -78,7 +78,7 @@ def library_value(identifier, name):
 
 
 def image(elf_type, code, tags, symbols, strings, relocations=(), plt=(), relro_flags=4, headers=None,
-          procparam=False, interpreter=False):
+          procparam=False, interpreter=False, standard_tables=False):
     data = bytearray(DYNLIB_OFFSET + 0x1000)
     data[:16] = b"\x7fELF\x02\x01\x01\x09" + bytes(8)
     data[TEXT_OFFSET + ENTRY:TEXT_OFFSET + ENTRY + len(code)] = code
@@ -89,15 +89,24 @@ def image(elf_type, code, tags, symbols, strings, relocations=(), plt=(), relro_
         struct.pack_into("<QQq", data, DYNLIB_OFFSET + JMPREL + index * 24, *entry)
     for index, entry in enumerate(relocations):
         struct.pack_into("<QQq", data, DYNLIB_OFFSET + RELA + index * 24, *entry)
-    tags = list(tags) + [
-        (DT_SCE_STRTAB, STRTAB), (DT_SCE_STRSZ, len(strings.data)),
-        (DT_SCE_SYMTAB, SYMTAB), (DT_SCE_SYMENT, 24), (DT_SCE_SYMTABSZ, len(symbol_bytes)),
-        (DT_SCE_HASH, HASH), (DT_SCE_HASHSZ, 20),
-        (DT_SCE_RELA, RELA), (DT_SCE_RELASZ, len(relocations) * 24), (DT_SCE_RELAENT, 24),
-        (DT_SCE_FINGERPRINT, 0), (DT_DEBUG, 0), (DT_TEXTREL, 0), (DT_FLAGS, 4), (0, 0)]
-    if plt:
-        tags[-1:-1] = [(DT_SCE_PLTGOT, RELRO_ADDRESS), (DT_SCE_JMPREL, JMPREL),
-                       (DT_SCE_PLTREL, 7), (DT_SCE_PLTRELSZ, len(plt) * 24)]
+    if standard_tables:
+        tags = list(tags) + [
+            (5, DYNLIB_ADDRESS + STRTAB), (10, len(strings.data)),
+            (6, DYNLIB_ADDRESS + SYMTAB), (11, 24), (DT_SCE_SYMTABSZ, len(symbol_bytes)),
+            (4, DYNLIB_ADDRESS + HASH),
+            (7, DYNLIB_ADDRESS + RELA), (8, len(relocations) * 24), (9, 24), (0, 0)]
+        if plt:
+            tags[-1:-1] = [(3, RELRO_ADDRESS), (23, DYNLIB_ADDRESS + JMPREL), (20, 7), (2, len(plt) * 24)]
+    else:
+        tags = list(tags) + [
+            (DT_SCE_STRTAB, STRTAB), (DT_SCE_STRSZ, len(strings.data)),
+            (DT_SCE_SYMTAB, SYMTAB), (DT_SCE_SYMENT, 24), (DT_SCE_SYMTABSZ, len(symbol_bytes)),
+            (DT_SCE_HASH, HASH), (DT_SCE_HASHSZ, 20),
+            (DT_SCE_RELA, RELA), (DT_SCE_RELASZ, len(relocations) * 24), (DT_SCE_RELAENT, 24),
+            (DT_SCE_FINGERPRINT, 0), (DT_DEBUG, 0), (DT_TEXTREL, 0), (DT_FLAGS, 4), (0, 0)]
+        if plt:
+            tags[-1:-1] = [(DT_SCE_PLTGOT, RELRO_ADDRESS), (DT_SCE_JMPREL, JMPREL),
+                           (DT_SCE_PLTREL, 7), (DT_SCE_PLTRELSZ, len(plt) * 24)]
     data[DYNLIB_OFFSET + STRTAB:DYNLIB_OFFSET + STRTAB + len(strings.data)] = strings.data
     data[DYNLIB_OFFSET + SYMTAB:DYNLIB_OFFSET + SYMTAB + len(symbol_bytes)] = symbol_bytes
     struct.pack_into("<IIIII", data, DYNLIB_OFFSET + HASH, 1, len(symbol_bytes) // 24, 1, 0, 0)
@@ -106,6 +115,7 @@ def image(elf_type, code, tags, symbols, strings, relocations=(), plt=(), relro_
     if headers is None:
         headers = [
             (PT_LOAD, 5, TEXT_OFFSET, TEXT_ADDRESS, 0x1000, 0x1000, 0x4000),
+            (PT_LOAD, 6, RELRO_OFFSET, RELRO_ADDRESS, 0x1000, 0x1000, 0x4000) if standard_tables else
             (PT_SCE_RELRO, relro_flags, RELRO_OFFSET, RELRO_ADDRESS, 0x1000, 0x1000, 0x4000),
             (PT_LOAD, 6, DATA_OFFSET, DATA_ADDRESS, 0x1000, 0x1000, 0x4000),
             (PT_DYNAMIC, 6, DYNLIB_OFFSET + DYNAMIC, 0, len(tags) * 16, len(tags) * 16, 8),
@@ -113,6 +123,8 @@ def image(elf_type, code, tags, symbols, strings, relocations=(), plt=(), relro_
             (PT_SCE_COMMENT, 0, 0, 0, 0, 0, 1),
             (PT_SCE_VERSION, 0, 0, 0, 0, 0, 1),
         ]
+        if standard_tables:
+            headers.append((PT_LOAD, 4, DYNLIB_OFFSET, DYNLIB_ADDRESS, 0x1000, 0x1000, 0x4000))
         if procparam:
             struct.pack_into("<QIIQ", data, DATA_OFFSET, 0x50, 0x4942524F, 3, 0x05050031)
             headers.append((PT_SCE_PROCPARAM, 4, DATA_OFFSET, DATA_ADDRESS, 0x50, 0x50, 8))

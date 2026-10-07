@@ -1,6 +1,7 @@
 #ifndef DOMAIN_GUESTPLATFORM_HPP
 #define DOMAIN_GUESTPLATFORM_HPP
 
+#include <domain/GuestPlatformId.hpp>
 #include <domain/Types.hpp>
 #include <array>
 #include <optional>
@@ -10,11 +11,6 @@
 #include <string_view>
 
 namespace Domain {
-
-enum class GuestPlatform {
-    Ps4,
-    Ps5
-};
 
 enum class GuestPlatformSelection {
     Auto,

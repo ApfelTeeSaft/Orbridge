@@ -123,8 +123,10 @@ foreach(LIB_DIR ${LIBS_DIRS})
 endforeach()
 
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
+set(ANYPS5_HOST_LIBRARY_DIRECTORY ${PATCHED_DIR} CACHE INTERNAL "")
 
 if(BUILD_TESTING)
+    add_custom_target(guest_runtime_libraries ALL DEPENDS ${LIBC_PATCHED} ${PATCHED_DIR}/libkernel.prx)
     add_test_executable(savedata_memory_metadata_tests tests/SaveDataMemoryMetadata.cpp)
     target_include_directories(savedata_memory_metadata_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(savedata_memory_metadata_tests PRIVATE libSceSaveData.native)

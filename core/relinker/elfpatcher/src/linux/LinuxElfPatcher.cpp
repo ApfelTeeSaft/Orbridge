@@ -148,6 +148,7 @@ std::vector<std::uint8_t> LinuxElfPatcher::Patch(
     if (!lazyBinding)
         _appendDynEntry(dynSegBuf, DT_FLAGS, DF_BIND_NOW);
     _appendDynEntry(dynSegBuf, DT_RUNPATH, runPathStrOff);
+    _appendDynEntry(dynSegBuf, DT_ORBRIDGE_GUEST_PLATFORM, static_cast<std::uint64_t>(dynSection.Platform));
     _appendDynEntry(dynSegBuf, DT_NULL, 0);
 
     const auto dynSegOff = static_cast<std::uint64_t>(buf.size());
