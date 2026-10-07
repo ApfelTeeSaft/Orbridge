@@ -26,11 +26,16 @@ struct GuestPlatformProfile {
     GuestPlatform Platform;
     std::string_view Name;
     std::int64_t NeededModuleTag;
+    bool SceTablesInDynamicData;
+    bool LoadsSceRelro;
+    bool DropsInterpreter;
+    bool DeclaresTextRelocations;
+    std::optional<std::uint16_t> ExecutableType;
 };
 
 inline constexpr std::array<GuestPlatformProfile, 2> GuestPlatformProfiles{{
-    {GuestPlatform::Ps4, "PS4", 0x6100000f},
-    {GuestPlatform::Ps5, "PS5", 0x61000045},
+    {GuestPlatform::Ps4, "PS4", 0x6100000f, true, true, true, true, 0xfe10},
+    {GuestPlatform::Ps5, "PS5", 0x61000045, false, false, false, false, std::nullopt},
 }};
 
 struct GuestPlatformTag {

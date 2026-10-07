@@ -57,6 +57,7 @@ inline constexpr std::uint64_t kDynamicHeaderAlignment = 8;
 inline constexpr std::uint64_t kInterpHeaderAlignment = 1;
 inline constexpr std::uint16_t kSyntheticProgramHeaderCount = 4;
 
+inline constexpr std::uint32_t PT_NULL = 0;
 inline constexpr std::uint32_t PT_LOAD = 1;
 inline constexpr std::uint32_t PT_DYNAMIC = 2;
 inline constexpr std::uint32_t PT_INTERP = 3;
@@ -67,6 +68,8 @@ inline constexpr std::uint32_t PF_X = 0x1;
 inline constexpr std::uint32_t PF_W = 0x2;
 inline constexpr std::uint32_t PF_R = 0x4;
 inline constexpr std::uint32_t ET_DYN = 3;
+inline constexpr std::uint16_t ET_SCE_EXEC = 0xfe00;
+inline constexpr std::uint16_t ET_SCE_DYNEXEC = 0xfe10;
 inline constexpr std::uint32_t PT_SCE_DYNLIBDATA = 0x61000000;
 inline constexpr std::uint32_t PT_OS_PROCPARAM = 0x61000001;
 inline constexpr std::uint32_t PT_OS_RELRO = 0x61000010;

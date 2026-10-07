@@ -98,11 +98,15 @@ def main():
         succeeds("no-metadata-ps5", executable(),
                  "Guest platform: PS5 (--platform; no SCE module or library tags)", ("--platform", "ps5"))
 
-        result = fails("ps4", executable([PS4_NEEDED_MODULE, PS4_IMPORT_LIB]), 2,
-                       "PS4 executables are not supported yet")
-        assert "Detected guest platform: PS4 (DT_SCE_NEEDED_MODULE 0x6100000f)" in result.stdout, result.stdout
-        fails("ps4-library-only", executable([PS4_IMPORT_LIB]), 2, "PS4 executables are not supported yet")
-        fails("no-metadata-ps4", executable(), 2, "PS4 executables are not supported yet", ("--platform", "ps4"))
+        succeeds("ps4", executable([PS4_NEEDED_MODULE, PS4_IMPORT_LIB]),
+                 "Detected guest platform: PS4 (DT_SCE_NEEDED_MODULE 0x6100000f)")
+        succeeds("ps4-library-only", executable([PS4_IMPORT_LIB]),
+                 "Detected guest platform: PS4 (DT_SCE_IMPORT_LIB 0x61000015)")
+        succeeds("no-metadata-ps4", executable(),
+                 "Guest platform: PS4 (--platform; no SCE module or library tags)", ("--platform", "ps4"))
+        fails("ps5-module-in-ps4", executable([PS4_NEEDED_MODULE]), 2,
+              "a.prx carries PS5 module metadata (DT_SCE_NEEDED_MODULE 0x61000045), but the executable is PS4",
+              modules={"a.prx": module(PS5_NEEDED_MODULE)})
 
         fails("mixed", executable([PS5_NEEDED_MODULE, PS4_NEEDED_MODULE]), 2,
               "executable: conflicting PS4 (DT_SCE_NEEDED_MODULE 0x6100000f) and PS5 (DT_SCE_NEEDED_MODULE 0x61000045) module metadata")

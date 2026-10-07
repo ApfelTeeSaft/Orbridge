@@ -30,6 +30,19 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     image.SourcePath = path;
     image.OutputName = path.filename().string() + GuestModuleSuffix;
     image.Headers = ElfReader(bytes).ReadProgramHeaders();
+    const auto& profile = Domain::PlatformProfile(platform);
+    if (profile.LoadsSceRelro) {
+        for (std::size_t index = 0; index < image.Headers.size(); ++index) {
+            auto& header = image.Headers[index];
+            if (header.Type != 0x61000010) continue;
+            if ((header.Flags & 1) != 0) fail("Executable PT_SCE_RELRO segment is not supported");
+            header.Type = 1;
+            header.Flags |= 2;
+            const auto entry = Io::ReadU64(bytes, 32) + index * 56;
+            Io::WriteU32(bytes, entry, header.Type);
+            Io::WriteU32(bytes, entry + 4, header.Flags);
+        }
+    }
     const Domain::ProgramHeader* dynamic = nullptr;
     const Domain::ProgramHeader* dynlib = nullptr;
     const Domain::ProgramHeader* tls = nullptr;
@@ -64,7 +77,7 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     std::vector<std::uint64_t> needed;
     std::vector<std::uint64_t> moduleImports;
     std::vector<std::int64_t> dynamicTags;
-    const auto neededModuleTag = static_cast<std::uint64_t>(Domain::PlatformProfile(platform).NeededModuleTag);
+    const auto neededModuleTag = static_cast<std::uint64_t>(profile.NeededModuleTag);
     bool terminated = false;
     for (std::uint64_t offset = dynamic->Offset; offset < dynamic->Offset + dynamic->FileSize; offset += 16) {
         const auto tag = Io::ReadU64(bytes, offset);
@@ -80,9 +93,11 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     if (!terminated) fail("Unterminated dynamic segment");
     Domain::RequireGuestPlatform(Domain::GuestPlatformEvidence(dynamicTags, path.string()), platform, "Guest module " + path.string());
     for (const auto unsupported : {15u, 16u, 17u, 18u, 19u, 22u, 35u, 36u, 37u}) {
+        if (unsupported == 22u && profile.DeclaresTextRelocations) continue;
         if (tags.contains(unsupported)) fail("Unsupported dynamic tag " + std::to_string(unsupported));
     }
-    if (tags.contains(30) && (tags.at(30) & ~8ull) != 0) fail("Unsupported guest dynamic flags");
+    const auto allowedFlags = profile.DeclaresTextRelocations ? 0xcull : 8ull;
+    if (tags.contains(30) && (tags.at(30) & ~allowedFlags) != 0) fail("Unsupported guest dynamic flags");
     const auto mapped = [&](std::uint64_t address, std::uint64_t size, std::uint32_t flags) {
         for (const auto& header : image.Headers) {
             if (header.Type == 1 && (header.Flags & flags) == flags && address >= header.MappedAddress && address - header.MappedAddress <= header.MemorySize && size <= header.MemorySize - (address - header.MappedAddress)) return;

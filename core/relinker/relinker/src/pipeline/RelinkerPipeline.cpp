@@ -79,9 +79,59 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
     for (const auto& tag : dynTags) tagValues.push_back(tag.Tag);
     const auto platform = Domain::SelectGuestPlatform(Domain::GuestPlatformEvidence(tagValues, "executable"), platformSelection, "executable");
     std::cout << Domain::DescribeGuestPlatform(platform) << "\n";
-    if (platform.Platform == Domain::GuestPlatform::Ps4)
-        throw RelinkerException("PS4 executables are not supported yet");
     const auto& profile = Domain::PlatformProfile(platform.Platform);
+    const std::string platformName(profile.Name);
+    const auto elfHeader = _elfReader->ReadHeader();
+    if (profile.ExecutableType) {
+        const auto type = elfHeader.Type;
+        if (type == ET_SCE_EXEC)
+            throw RelinkerException(platformName + " fixed-address executables (ET_SCE_EXEC 0xfe00) are not supported: their code assumes the load address 0x400000");
+        if (type != *profile.ExecutableType) {
+            std::ostringstream message;
+            message << "Unsupported " << platformName << " executable type 0x" << std::hex << type << "; expected 0x" << *profile.ExecutableType;
+            throw RelinkerException(message.str());
+        }
+    }
+    if (profile.SceTablesInDynamicData && unusedFilterLevel != 0)
+        throw RelinkerException("unused-filter=" + std::to_string(unusedFilterLevel) + " is not supported for " + platformName + " executables: the filters do not read SCE tables from PT_SCE_DYNLIBDATA");
+
+    std::vector<RelinkPatch> platformPatches;
+    for (std::size_t index = 0; index < programHeaders.size(); ++index) {
+        auto& ph = programHeaders[index];
+        if (profile.LoadsSceRelro && ph.Type == PT_OS_RELRO) {
+            if ((ph.Flags & PF_X) != 0)
+                throw RelinkerException("Executable PT_SCE_RELRO segment is not supported", ph.Offset);
+            ph.Type = PT_LOAD;
+            ph.Flags |= PF_W;
+        } else if (profile.DropsInterpreter && ph.Type == PT_INTERP) {
+            ph.Type = PT_NULL;
+        } else {
+            continue;
+        }
+        RelinkPatch patch{elfHeader.ProgramHeaderOffset + index * elfHeader.ProgramHeaderEntrySize, std::vector<std::uint8_t>(8)};
+        std::memcpy(patch.Bytes.data(), &ph.Type, 4);
+        std::memcpy(patch.Bytes.data() + 4, &ph.Flags, 4);
+        platformPatches.push_back(std::move(patch));
+    }
+
+    const ProgramHeader* dynamicData = nullptr;
+    for (const auto& ph : programHeaders) {
+        if (ph.Type != PT_SCE_DYNLIBDATA)
+            continue;
+        if (dynamicData != nullptr && profile.SceTablesInDynamicData)
+            throw RelinkerException("Duplicate PT_SCE_DYNLIBDATA segment", ph.Offset);
+        dynamicData = &ph;
+    }
+
+    auto sceTable = [&](const std::uint64_t value, const ByteCount size, const char* name) -> FileByteOffset {
+        if (!profile.SceTablesInDynamicData)
+            return value;
+        if (dynamicData == nullptr)
+            throw RelinkerException(std::string("SCE ") + name + " requires a PT_SCE_DYNLIBDATA segment");
+        if (value > dynamicData->FileSize || size > dynamicData->FileSize - value)
+            throw RelinkerException(std::string("SCE ") + name + " exceeds PT_SCE_DYNLIBDATA", value);
+        return dynamicData->Offset + value;
+    };
 
     auto hasTag = [&](const std::int64_t tag) {
         for (const auto& t : dynTags)
@@ -107,9 +157,9 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
         return hasOs;
     };
 
-    auto readAsOffset = [&](const std::int64_t osTag, const std::int64_t sysvTag, const char* name) -> FileByteOffset {
+    auto readAsOffset = [&](const std::int64_t osTag, const std::int64_t sysvTag, const char* name, const ByteCount size) -> FileByteOffset {
         if (requireExactlyOneOf(osTag, sysvTag, name))
-            return getTagValue(osTag);
+            return sceTable(getTagValue(osTag), size, name);
         return _elfReader->TranslateVirtualAddress(getTagValue(sysvTag));
     };
 
@@ -127,10 +177,11 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
             : getTagValue(DT_PLTGOT);
     }
 
-    const FileByteOffset dynStrTabOffset = readAsOffset(DT_OS_STRTAB, DT_STRTAB, "DT_STRTAB");
     const ByteCount dynStrTabSize = readAsSize(DT_OS_STRSZ, DT_STRSZ, "DT_STRSZ");
+    const FileByteOffset dynStrTabOffset = readAsOffset(DT_OS_STRTAB, DT_STRTAB, "DT_STRTAB", dynStrTabSize);
 
-    const FileByteOffset dynSymTabOffset = readAsOffset(DT_OS_SYMTAB, DT_SYMTAB, "DT_SYMTAB");
+    const ByteCount dynSymTabSize = hasTag(DT_OS_SYMTABSZ) ? getTagValue(DT_OS_SYMTABSZ) : 0;
+    const FileByteOffset dynSymTabOffset = readAsOffset(DT_OS_SYMTAB, DT_SYMTAB, "DT_SYMTAB", dynSymTabSize);
     constexpr std::size_t symEntSize = 24;
     if (readAsSize(DT_OS_SYMENT, DT_SYMENT, "DT_SYMENT") != symEntSize)
         throw RelinkerException("Unsupported DT_SYMENT value");
@@ -143,14 +194,14 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
             : getTagValue(DT_PLTREL);
         if (jmprelType != DT_RELA)
             throw RelinkerException("Unsupported DT_PLTREL type");
-        dynJmpRelOffset = readAsOffset(DT_OS_JMPREL, DT_JMPREL, "DT_JMPREL");
+        dynJmpRelOffset = readAsOffset(DT_OS_JMPREL, DT_JMPREL, "DT_JMPREL", gotSize);
         if (gotSize % 24 != 0)
             throw RelinkerException("Invalid DT_PLTRELSZ value");
     }
     const ByteCount dynJmpRelSize = gotSize;
 
-    const FileByteOffset dynRelaOffset = readAsOffset(DT_OS_RELA, DT_RELA, "DT_RELA");
     const ByteCount dynRelaSize = readAsSize(DT_OS_RELASZ, DT_RELASZ, "DT_RELASZ");
+    const FileByteOffset dynRelaOffset = readAsOffset(DT_OS_RELA, DT_RELA, "DT_RELA", dynRelaSize);
     constexpr std::size_t relaEntSize = 24;
     if (readAsSize(DT_OS_RELAENT, DT_RELAENT, "DT_RELAENT") != relaEntSize)
         throw RelinkerException("Unsupported DT_RELAENT value");
@@ -215,6 +266,8 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
                 continue;
             }
 
+            if (profile.SceTablesInDynamicData && (static_cast<ByteCount>(symIdx) + 1) * symEntSize > dynSymTabSize)
+                throw RelinkerException("Relocation symbol index exceeds DT_SCE_SYMTABSZ", pos);
             const FileByteOffset symOff = dynSymTabOffset + static_cast<FileByteOffset>(symIdx) * symEntSize;
             if (symOff + 4 > raw.size())
                 throw RelinkerException("Symbol table entry out of bounds", symOff);
@@ -229,6 +282,26 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
 
     extractRela(dynRelaOffset, dynRelaSize);
     extractRela(dynJmpRelOffset, dynJmpRelSize);
+
+    if (profile.DeclaresTextRelocations) {
+        auto requireWritableTargets = [&](const FileByteOffset relaOff, const ByteCount relaSize) {
+            for (ByteCount off = 0; off + relaEntSize <= relaSize; off += relaEntSize) {
+                std::uint64_t rOffset = 0, rInfo = 0;
+                std::memcpy(&rOffset, raw.data() + relaOff + off, 8);
+                std::memcpy(&rInfo, raw.data() + relaOff + off + 8, 8);
+                if (static_cast<std::uint32_t>(rInfo) == R_X86_64_NONE)
+                    continue;
+                bool writable = false;
+                for (const auto& ph : programHeaders)
+                    if (ph.Type == PT_LOAD && (ph.Flags & PF_W) != 0 && rOffset >= ph.MappedAddress && rOffset - ph.MappedAddress <= ph.MemorySize && ph.MemorySize - (rOffset - ph.MappedAddress) >= 8)
+                        writable = true;
+                if (!writable)
+                    throw RelinkerException("Relocation target is outside the writable segments; text relocations are not supported", rOffset);
+            }
+        };
+        requireWritableTargets(dynRelaOffset, dynRelaSize);
+        requireWritableTargets(dynJmpRelOffset, dynJmpRelSize);
+    }
 
     for (const auto& ref : nidRefs)
         _validationPolicy->ValidateRelocationTypeSupported(ref.RelocationTypeValue, ref.RelocationTableOffset);
@@ -338,6 +411,9 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
             entry.CallSitesResolved = !entry.CallSites.empty();
         }
     }
+
+    for (auto& patch : platformPatches)
+        patches.push_back(std::move(patch));
 
     return RelinkResult{std::move(entries), std::move(programHeaders), std::move(dynSection), gotVAddr, std::move(patches), platform.Platform};
 }
