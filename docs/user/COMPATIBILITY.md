@@ -10,4 +10,4 @@ Tested upstream in AnyPS5.
 
 ## PS4
 
-No PS4 title has been tested.
+No PS4 title runs yet. One Unreal Engine 4 title, with 12 bundled modules, relinks for Linux and Windows, but 17 of the system modules it links against have no host implementation, among them `libSceGnmDriver`, so it does not start.

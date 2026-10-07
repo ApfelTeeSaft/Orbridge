@@ -1,6 +1,7 @@
 #include <relinker/pipeline/RelinkerPipeline.hpp>
 #include <elfpatcher/general/ElfConstants.hpp>
 #include <relinker/analysis/ValidationPolicy.hpp>
+#include <relinker/analysis/CodeSegments.hpp>
 #include <relinker/analysis/UnusedNidFilter/PltCompactor.hpp>
 #include <sstream>
 #include <iostream>
@@ -10,6 +11,17 @@
 namespace Relinker {
 
 using namespace Elfpatcher;
+
+Domain::GuestPlatformDetection SelectExecutablePlatform(const IElfReader& elfReader, const Domain::GuestPlatformSelection selection) {
+    for (const auto& ph : elfReader.ReadProgramHeaders()) {
+        if (ph.Type != PT_DYNAMIC)
+            continue;
+        std::vector<std::int64_t> tags;
+        for (const auto& tag : elfReader.ReadDynamicTags(ph)) tags.push_back(tag.Tag);
+        return Domain::SelectGuestPlatform(Domain::GuestPlatformEvidence(tags, "executable"), selection, "executable");
+    }
+    throw RelinkerException("No PT_DYNAMIC segment found");
+}
 
 RelinkerPipeline::RelinkerPipeline(std::shared_ptr<IElfReader> elfReader, std::shared_ptr<ISyscallScanner> syscallScanner, std::shared_ptr<ICallSiteResolver> callSiteResolver, std::shared_ptr<IValidationPolicy> validationPolicy, std::shared_ptr<ISysVDynamicSectionBuilder> dynamicSectionBuilder, std::shared_ptr<IUnusedNidFilter> unusedNidFilter, std::uint32_t unusedFilterLevel, Domain::GuestPlatformSelection platformSelection)
     : _elfReader(std::move(elfReader))
@@ -305,6 +317,21 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
 
     for (const auto& ref : nidRefs)
         _validationPolicy->ValidateRelocationTypeSupported(ref.RelocationTypeValue, ref.RelocationTableOffset);
+
+    if (profile.CodeSharesSegmentWithReadOnlyData) {
+        textSection.clear();
+        executableSegments.clear();
+        for (const auto& ph : ReadCodeSegments(raw, programHeaders, platform.Platform)) {
+            auto segment = _elfReader->ReadSegment(ph);
+            if (segment.empty())
+                continue;
+            if (textSection.empty()) {
+                textSection = segment;
+                textVAddr = ph.MappedAddress;
+            }
+            executableSegments.emplace_back(std::move(segment), ph.MappedAddress);
+        }
+    }
 
     for (const auto& [segment, segmentVAddr] : executableSegments)
         _syscallScanner->ScanCodeSectionForSyscalls(segment, segmentVAddr, segment.size());

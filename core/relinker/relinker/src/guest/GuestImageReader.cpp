@@ -28,6 +28,7 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     range(Io::ReadU64(bytes, 32), static_cast<std::uint64_t>(Io::ReadU16(bytes, 56)) * 56);
     GuestImage image;
     image.SourcePath = path;
+    image.Platform = platform;
     image.OutputName = path.filename().string() + GuestModuleSuffix;
     image.Headers = ElfReader(bytes).ReadProgramHeaders();
     const auto& profile = Domain::PlatformProfile(platform);
@@ -160,7 +161,8 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
             image.Symbols.push_back({{}, 0, 0, 0, 0, 0});
             continue;
         }
-        if (offset != 0 && ((info >> 4) > 2 || (visibility & ~3u) != 0 || ((info & 15) != 0 && (info & 15) != 1 && (info & 15) != 2 && (info & 15) != 6))) fail("Unsupported symbol attributes: " + name);
+        const bool moduleSection = info == 3 && visibility == 0 && section == 0 && value == 0 && size == 0 && name.empty();
+        if (offset != 0 && !moduleSection && ((info >> 4) > 2 || (visibility & ~3u) != 0 || ((info & 15) != 0 && (info & 15) != 1 && (info & 15) != 2 && (info & 15) != 6))) fail("Unsupported symbol attributes: " + name);
         if (section != 0 && (info >> 4) != 0 && visibility != 1 && visibility != 2) {
             if (name.empty() || !exports.insert(name).second) fail("Duplicate or empty export after stripping #: " + name);
         }
@@ -192,8 +194,12 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
         const auto offset = table(addressTag, sceAddressTag, size);
         output.assign(bytes.begin() + offset, bytes.begin() + offset + size);
         for (std::uint64_t index = 0; index < size; index += 24) {
-            const auto info = Io::ReadU64(output, index + 8);
+            auto info = Io::ReadU64(output, index + 8);
             const auto relocation = static_cast<std::uint32_t>(info);
+            if (relocation == 16 && (info >> 32) != 0 && (info >> 32) < image.Symbols.size() && image.Symbols[info >> 32].Info == 3) {
+                info = relocation;
+                Io::WriteU64(output, index + 8, info);
+            }
             if ((info >> 32) >= image.Symbols.size() || (plt && relocation != 7) || (relocation != 1 && relocation != 6 && relocation != 7 && relocation != 8 && relocation != 16 && relocation != 17 && relocation != 18)) fail("Unsupported relocation or symbol index");
             const auto target = Io::ReadU64(output, index);
             const auto addend = Io::ReadU64(output, index + 16);
@@ -220,10 +226,11 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     copyRelocations(23, 0x61000029, 2, 0x6100002d, image.Dynamic.RelaPltData, true);
     if (!image.Dynamic.RelaPltData.empty() && get(20, 0x6100002b) != 7) fail("Unsupported PLT relocation format");
     if (tags.contains(3) || tags.contains(0x61000027)) image.Got = get(3, 0x61000027);
-    if (tags.contains(12)) image.Init = tags.at(12);
-    if (tags.contains(13)) image.Fini = tags.at(13);
-    if (image.Init != 0) mapped(image.Init, 1, 1);
-    if (image.Fini != 0) mapped(image.Fini, 1, 1);
+    for (const auto& [tag, function] : {std::pair{12u, &image.Init}, std::pair{13u, &image.Fini}}) {
+        if (!tags.contains(tag) || (tags.at(tag) == 0 && !profile.ZeroInitFiniIsFunction)) continue;
+        *function = tags.at(tag);
+        mapped(**function, 1, 1);
+    }
     const auto readLifecycleArray = [&](std::uint64_t addressTag, std::uint64_t sizeTag, std::vector<std::uint64_t>& entries) {
         if (!tags.contains(addressTag) && !tags.contains(sizeTag)) return;
         if (!tags.contains(sizeTag) || (tags.at(sizeTag) != 0 && !tags.contains(addressTag))) fail("Incomplete guest lifecycle array");
@@ -256,7 +263,7 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
     };
     readLifecycleArray(25, 27, image.InitArray);
     readLifecycleArray(26, 28, image.FiniArray);
-    if (tags.contains(33) && tags.at(33) != 0 && image.Init == 0) fail("Guest PREINIT_ARRAY has no module initializer");
+    if (tags.contains(33) && tags.at(33) != 0 && !image.Init) fail("Guest PREINIT_ARRAY has no module initializer");
     image.Bytes = std::move(bytes);
     return image;
 }

@@ -10,7 +10,7 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 PS5: the relinker, system libraries, AGC driver and shader recompiler are inherited from AnyPS5. Upstream progress is published on the [AnyPS5 progress page](https://boykopovar.github.io/AnyPS5/) (upstream data, not Orbridge's).
 
-PS4: experimental and in progress. The relinker detects PS4 executables and converts them and their bundled modules; this is verified with synthetic executables only. The system libraries implement the PS5 interfaces, and the PS4 graphics stack (GNM driver, GCN shaders) is not implemented. No PS4 title runs yet.
+PS4: experimental and in progress. The relinker detects PS4 executables and converts them and their bundled modules; this is verified with synthetic executables and with one title that relinks but does not start. The system libraries implement the PS5 interfaces, and the PS4 graphics stack (GNM driver, GCN shaders) is not implemented. No PS4 title runs yet.
 
 Unsupported or unexpected states strictly throw `std::runtime_error`. `what()` is printed to stderr and the process terminates.
 

@@ -50,13 +50,13 @@ void patchAccess(std::vector<PeSection>& sections, const TlsAccess& access, cons
 
 }
 
-PeDirectory WindowsTlsBuilder::Build(const std::vector<std::uint8_t>& source, const std::vector<Domain::ProgramHeader>& headers, const WindowsLoadImage& image, std::vector<PeSection>& sections, std::vector<std::uint32_t>& relocations, std::uint32_t& nextRva, std::uint32_t* tlsIndexRva) const {
+PeDirectory WindowsTlsBuilder::Build(const std::vector<std::uint8_t>& source, const std::vector<Domain::ProgramHeader>& headers, const Domain::GuestPlatform platform, const WindowsLoadImage& image, std::vector<PeSection>& sections, std::vector<std::uint32_t>& relocations, std::uint32_t& nextRva, std::uint32_t* tlsIndexRva) const {
     const Domain::ProgramHeader* tls = nullptr;
     const Codegen::X64InstructionDecoder decoder;
 
     std::vector<TlsAccess> accesses;
     std::set<std::uint32_t> branchTargets;
-    const auto instructions = Relinker::CodeInstructionCollector().Collect(source, headers);
+    const auto instructions = Relinker::CodeInstructionCollector().Collect(source, headers, platform);
 
     for (const auto& header : headers) {
         if (header.Type == 7) {

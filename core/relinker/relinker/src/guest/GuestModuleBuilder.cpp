@@ -1,5 +1,6 @@
 #include <relinker/guest/GuestImage.hpp>
 #include <elfpatcher/general/GuestModuleWriter.hpp>
+#include <relinker/analysis/CodeSegments.hpp>
 #include <codegen/IAmd64OnlyConverter.hpp>
 #include <io/FileReader.hpp>
 #include <io/BufferUtils.hpp>
@@ -72,8 +73,7 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
             if (!repeated) providers.push_back(images.size());
             if (!windows && providers.size() > 1) sharedExports[symbol.Name].insert(providers.begin(), providers.end());
         }
-        std::vector<Domain::ProgramHeader> codeHeaders;
-        for (const auto& header : image.Headers) if (header.Type == 1 && (header.Flags & 1) != 0) codeHeaders.push_back(header);
+        const auto codeHeaders = ReadCodeSegments(image.Bytes, image.Headers, platform);
         if (toIntel) {
             auto converted = Codegen::MakeAmd64OnlyConverter()->Convert(std::move(image.Bytes), codeHeaders);
             image.Trampolines = std::move(converted.Trampolines);
@@ -100,6 +100,24 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         for (const auto provider : shared->second) providers += " " + images[provider].SourcePath.string();
         throw Domain::RelinkerException("Ambiguous guest import " + name + " in " + importer + ": exported by" + providers);
     };
+    const bool byModule = windows || Domain::PlatformProfile(platform).ResolvesGuestImportsByModule;
+    const auto guestProviders = [&](const std::string& name, const std::string& library) {
+        std::vector<std::size_t> providers;
+        const auto found = exports.find(name);
+        if (found == exports.end()) return providers;
+        for (const auto provider : found->second) {
+            const auto& candidate = images[provider];
+            if (!byModule || library.empty() || library == candidate.SourcePath.filename().string() || library == candidate.Soname) providers.push_back(provider);
+        }
+        return providers;
+    };
+    std::map<std::uint64_t, std::string> executableLibraries;
+    for (const auto* table : {&dynamic.RelaData, &dynamic.RelaPltData}) {
+        for (std::size_t position = 0; position + 24 <= table->size(); position += 24) {
+            const auto module = dynamic.ImportModules.find(Io::ReadU64(*table, position));
+            if (module != dynamic.ImportModules.end()) executableLibraries.emplace(Io::ReadU64(*table, position + 8) >> 32, module->second);
+        }
+    }
     const auto rename = [](std::vector<std::uint8_t>& symbols, std::vector<std::uint8_t>& strings, std::size_t index, const std::string& name) {
         if (strings.size() > std::numeric_limits<std::uint32_t>::max()) throw Domain::RelinkerException("Guest string table too large");
         Io::WriteU32(symbols, index * 24, static_cast<std::uint32_t>(strings.size()));
@@ -114,6 +132,8 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         const auto end = std::find(start, dynamic.DynStrData.end(), 0);
         if (end == dynamic.DynStrData.end()) throw Domain::RelinkerException("Unterminated executable symbol name");
         const std::string name(start, end);
+        const auto library = executableLibraries.find(offset / 24);
+        if (guestProviders(name.substr(0, name.find('#')), library == executableLibraries.end() ? std::string{} : library->second).empty()) continue;
         rejectSharedImport(name.substr(0, name.find('#')), inputPath.string());
         if (!windows && exports.contains(name)) rename(dynamic.DynSymData, dynamic.DynStrData, offset / 24, name);
     }
@@ -130,15 +150,8 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         }
         for (const auto& symbol : images[index].Symbols) {
             if (symbol.Section != 0 || symbol.Name.empty()) continue;
-            rejectSharedImport(symbol.Name, images[index].SourcePath.string());
-            const auto found = exports.find(symbol.Name);
-            std::vector<std::size_t> providers;
-            if (found != exports.end()) {
-                for (const auto provider : found->second) {
-                    const auto& candidate = images[provider];
-                    if (!windows || symbol.Library.empty() || symbol.Library == candidate.SourcePath.filename().string() || symbol.Library == candidate.Soname) providers.push_back(provider);
-                }
-            }
+            const auto providers = guestProviders(symbol.Name, symbol.Library);
+            if (!providers.empty()) rejectSharedImport(symbol.Name, images[index].SourcePath.string());
             if (providers.size() > 1) throw Domain::RelinkerException("Ambiguous guest import after stripping #: " + symbol.Name);
             if (!providers.empty()) {
                 const auto& provider = images[providers.front()];
@@ -153,7 +166,8 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
             for (std::size_t index = 1; index < image.Symbols.size(); ++index) {
                 const auto& symbol = image.Symbols[index];
                 const bool exported = symbol.Section != 0 && (symbol.Info >> 4) != 0 && symbol.Visibility != 1 && symbol.Visibility != 2;
-                if ((symbol.Section == 0 || exported) && exports.contains(symbol.Name)) rename(image.Dynamic.DynSymData, image.Dynamic.DynStrData, index, symbol.Name);
+                const bool imported = symbol.Section == 0 && !guestProviders(symbol.Name, symbol.Library).empty();
+                if ((imported || exported) && exports.contains(symbol.Name)) rename(image.Dynamic.DynSymData, image.Dynamic.DynStrData, index, symbol.Name);
             }
         }
     }

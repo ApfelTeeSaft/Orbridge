@@ -1,4 +1,6 @@
 #include <relinker/analysis/CodeInstructionCollector.hpp>
+#include <relinker/analysis/CodeSegments.hpp>
+#include <domain/GuestPlatform.hpp>
 #include <relinker/analysis/UnusedNidFilter/IControlFlowGraph.hpp>
 #include <relinker/analysis/UnusedNidFilter/EhFrameReader.hpp>
 #include <codegen/x86/X64InstructionDecoder.hpp>
@@ -26,7 +28,8 @@ public:
 
 }
 
-std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::vector<std::uint8_t>& bytes, const std::vector<Domain::ProgramHeader>& headers) const {
+std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::vector<std::uint8_t>& bytes, const std::vector<Domain::ProgramHeader>& headers, const Domain::GuestPlatform platform) const {
+    const auto codeSegments = ReadCodeSegments(bytes, headers, platform);
     const auto range = [&](std::uint64_t offset, std::uint64_t size) {
         if (offset > bytes.size() || size > bytes.size() - offset) throw Domain::RelinkerException("Code analysis: file range exceeds image", offset);
     };
@@ -40,7 +43,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
         throw Domain::RelinkerException("Code analysis: unmapped address", address);
     };
     const auto isCode = [&](std::uint64_t address) {
-        for (const auto& header : headers) if (header.Type == 1 && (header.Flags & 1) != 0 && address >= header.MappedAddress && address - header.MappedAddress < header.FileSize) return true;
+        for (const auto& header : codeSegments) if (header.Type == 1 && (header.Flags & 1) != 0 && address >= header.MappedAddress && address - header.MappedAddress < header.FileSize) return true;
         return false;
     };
     std::map<std::uint64_t, std::uint64_t> tags;
@@ -85,7 +88,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
         if (!isCode(begin) || size > std::numeric_limits<std::uint64_t>::max() - begin)
             throw Domain::RelinkerException("Code analysis: invalid function range", begin);
         bool mapped = false;
-        for (const auto& header : headers) {
+        for (const auto& header : codeSegments) {
             if (header.Type != 1 || (header.Flags & 1) == 0 || begin < header.MappedAddress || begin - header.MappedAddress >= header.FileSize) continue;
             if (size > header.FileSize - (begin - header.MappedAddress))
                 throw Domain::RelinkerException("Code analysis: function exceeds executable segment", begin);
@@ -177,17 +180,24 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
     std::set<std::uint64_t> instructions;
     const Codegen::X64InstructionDecoder decoder;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> skipped;
+    std::map<std::uint64_t, std::uint64_t> tables;
+    const auto inTable = [&](std::uint64_t address) {
+        const auto next = tables.upper_bound(address);
+        return next != tables.begin() && address < std::prev(next)->second;
+    };
     std::set<std::uint64_t> staticTargets;
+    const bool tablesFollowCode = Domain::PlatformProfile(platform).CodeSharesSegmentWithReadOnlyData;
     for (const auto& [begin, end] : functions) {
         const auto offset = fileOffset(begin, end - begin);
-        for (auto address = begin; address < end;) {
+        auto limit = end;
+        for (auto address = begin; address < limit;) {
             Codegen::DecodedInstructionInfo info;
             try {
-                info = decoder.DecodeInstruction(bytes.data() + offset + address - begin, end - address);
+                info = decoder.DecodeInstruction(bytes.data() + offset + address - begin, limit - address);
             } catch (const Codegen::CodegenException& error) {
-                const auto tailBytes = end - address;
+                const auto tailBytes = limit - address;
                 bool tailHasFsPrefix = false;
-                for (auto probe = address; probe < end; ++probe) {
+                for (auto probe = address; probe < limit; ++probe) {
                     if (bytes[offset + probe - begin] == 0x64) {
                         tailHasFsPrefix = true;
                         break;
@@ -195,12 +205,17 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
                 }
                 if (tailBytes > 15 || tailHasFsPrefix)
                     throw Domain::RelinkerException(std::string("Code analysis: ") + error.what(), address);
-                skipped.emplace_back(address, end);
+                skipped.emplace_back(address, limit);
                 break;
             }
-            if (info.Length == 0 || info.Length > end - address)
+            if (info.Length == 0 || info.Length > limit - address)
                 throw Domain::RelinkerException("Code analysis: instruction crosses function boundary", address);
             instructions.insert(address);
+            if (tablesFollowCode && info.HasRipRelativeDisp && !info.IsTwoByteOpcode && info.Opcode == 0x8d) {
+                const auto displacement = static_cast<std::int32_t>(Io::ReadU32(bytes, offset + address - begin + info.RipRelativeDispOffset));
+                const auto target = address + info.Length + static_cast<std::uint64_t>(static_cast<std::int64_t>(displacement));
+                if (target > address && target < limit) limit = target;
+            }
             if (info.HasBranchTarget && !info.HasRipRelativeDisp) {
                 const auto target = address + info.Length + static_cast<std::uint64_t>(info.BranchDisp);
                 staticTargets.insert(target);
@@ -208,6 +223,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
             }
             address += info.Length;
         }
+        if (limit != end) tables.emplace(limit, end);
     }
     for (const auto target : staticTargets) {
         for (const auto& [skipBegin, skipEnd] : skipped) {
@@ -218,15 +234,22 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
     std::size_t previousRoots = 0;
     do {
         previousRoots = roots.size();
-        for (const auto& header : headers) {
+        for (const auto& header : codeSegments) {
             if (header.Type != 1 || (header.Flags & 1) == 0 || header.FileSize == 0) continue;
             range(header.Offset, header.FileSize);
             std::vector<std::uint64_t> entries;
             for (const auto root : roots) if (root >= header.MappedAddress && root - header.MappedAddress < header.FileSize) entries.push_back(root);
             if (entries.empty()) continue;
-            const std::vector<std::uint8_t> text(bytes.begin() + header.Offset, bytes.begin() + header.Offset + header.FileSize);
+            std::vector<std::uint8_t> text(bytes.begin() + header.Offset, bytes.begin() + header.Offset + header.FileSize);
+            for (const auto& [tableBegin, tableEnd] : tables) {
+                if (tableEnd <= header.MappedAddress || tableBegin >= header.MappedAddress + header.FileSize) continue;
+                const auto first = std::max(tableBegin, header.MappedAddress) - header.MappedAddress;
+                const auto last = std::min(tableEnd - header.MappedAddress, header.FileSize);
+                std::fill(text.begin() + static_cast<std::ptrdiff_t>(first), text.begin() + static_cast<std::ptrdiff_t>(last), 0xcc);
+            }
             const auto graph = UnusedNidFilter::BuildControlFlowGraph(text, header.MappedAddress, entries.front(), entries, pointers);
             for (const auto address : graph->ReachableVaddrs()) {
+                if (inTable(address)) continue;
                 instructions.insert(address);
                 const auto offset = address - header.MappedAddress;
                 const auto info = decoder.DecodeInstruction(text.data() + offset, text.size() - offset);
@@ -239,7 +262,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
         if (address < previousEnd) {
             std::uint64_t spanEnd = previousEnd;
             try {
-                for (const auto& header : headers) {
+                for (const auto& header : codeSegments) {
                     if (header.Type != 1 || (header.Flags & 1) == 0 || address < header.MappedAddress || address - header.MappedAddress >= header.FileSize) continue;
                     const auto offset = address - header.MappedAddress;
                     const auto length = decoder.DecodeInstruction(bytes.data() + header.Offset + offset, header.FileSize - offset).Length;
@@ -250,7 +273,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
             } catch (const Codegen::CodegenException&) {
             }
             bool spanHasFsPrefix = false;
-            for (const auto& header : headers) {
+            for (const auto& header : codeSegments) {
                 if (header.Type != 1 || (header.Flags & 1) == 0 || address < header.MappedAddress || address - header.MappedAddress >= header.FileSize) continue;
                 const auto base = header.Offset + address - header.MappedAddress;
                 for (auto probe = base; probe < base + (spanEnd - address) && probe < bytes.size(); ++probe) {
@@ -265,7 +288,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
                 const auto previous = instructions.lower_bound(address);
                 if (previous != instructions.begin()) {
                     const auto previousStart = *std::prev(previous);
-                    for (const auto& header : headers) {
+                    for (const auto& header : codeSegments) {
                         if (header.Type != 1 || (header.Flags & 1) == 0 || previousStart < header.MappedAddress || previousStart - header.MappedAddress >= header.FileSize) continue;
                         const auto base = header.Offset + previousStart - header.MappedAddress;
                         if (decoder.DecodeInstruction(bytes.data() + base, bytes.size() - base).SegmentPrefix == 0x64) spanHasFsPrefix = true;
@@ -277,7 +300,7 @@ std::set<Domain::VirtualAddress> CodeInstructionCollector::Collect(const std::ve
             previousEnd = spanEnd;
             continue;
         }
-        for (const auto& header : headers) {
+        for (const auto& header : codeSegments) {
             if (header.Type != 1 || (header.Flags & 1) == 0 || address < header.MappedAddress || address - header.MappedAddress >= header.FileSize) continue;
             const auto offset = address - header.MappedAddress;
             previousEnd = address + decoder.DecodeInstruction(bytes.data() + header.Offset + offset, header.FileSize - offset).Length;

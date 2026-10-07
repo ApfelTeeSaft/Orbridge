@@ -13,6 +13,7 @@
 #include <relinker/analysis/ValidationPolicy.hpp>
 #include <relinker/analysis/SyscallScanner.hpp>
 #include <relinker/analysis/CallSiteResolver.hpp>
+#include <relinker/analysis/CodeSegments.hpp>
 #include <relinker/analysis/UnusedNidFilter.hpp>
 #include <relinker/output/SysVDynamicSectionBuilder.hpp>
 #include <relinker/output/CallRegistryWriter.hpp>
@@ -48,7 +49,8 @@ int main(const int argc, char* argv[]) {
 
         std::vector<Codegen::TrampolineSite> trampolines;
         if (args.toIntel) {
-            const auto codeSegments = Relinker::ElfReader(sourceBytes).ReadCodeSegments();
+            const Relinker::ElfReader reader(sourceBytes);
+            const auto codeSegments = Relinker::ReadCodeSegments(sourceBytes, reader.ReadProgramHeaders(), Relinker::SelectExecutablePlatform(reader, args.platform).Platform);
             auto converted = Codegen::MakeAmd64OnlyConverter()->Convert(std::move(sourceBytes), codeSegments);
             sourceBytes = std::move(converted.Bytes);
             trampolines = std::move(converted.Trampolines);

@@ -75,7 +75,7 @@ std::vector<std::uint8_t> WindowsPePatcher::Patch(const std::vector<std::uint8_t
         sections.push_back({".ehmeta", nextRva, SectionRead | 0x40u, std::move(metadata)});
         nextRva = AlignRva(nextRva + sections.back().Data.size());
     }
-    directories[9] = WindowsTlsBuilder().Build(sourceElf, originalHeaders, image, sections, relocations.BaseRelocations, nextRva);
+    directories[9] = WindowsTlsBuilder().Build(sourceElf, originalHeaders, dynamicSection.Platform, image, sections, relocations.BaseRelocations, nextRva);
     WindowsTrampolineBuilder().Build(trampolines, image, sections, nextRva);
     const WindowsImportBuilder importBuilder;
     auto nativeImports = importBuilder.Build(nextRva);

@@ -13,6 +13,8 @@
 
 namespace Relinker {
 
+Domain::GuestPlatformDetection SelectExecutablePlatform(const IElfReader& elfReader, Domain::GuestPlatformSelection selection);
+
 class RelinkerPipeline : public IRelinkerPipeline {
 public:
     RelinkerPipeline(std::shared_ptr<IElfReader> elfReader, std::shared_ptr<ISyscallScanner> syscallScanner, std::shared_ptr<ICallSiteResolver> callSiteResolver, std::shared_ptr<IValidationPolicy> validationPolicy, std::shared_ptr<ISysVDynamicSectionBuilder> dynamicSectionBuilder, std::shared_ptr<IUnusedNidFilter> unusedNidFilter, std::uint32_t unusedFilterLevel, Domain::GuestPlatformSelection platformSelection = Domain::GuestPlatformSelection::Auto);

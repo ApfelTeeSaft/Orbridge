@@ -62,11 +62,11 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
     bytes.insert(bytes.end(), image.Dynamic.RelaData.begin(), image.Dynamic.RelaData.end());
     const auto pltAddress = address();
     bytes.insert(bytes.end(), image.Dynamic.RelaPltData.begin(), image.Dynamic.RelaPltData.end());
-    const auto lifecycle = [&](std::uint64_t target) {
-        if (target == 0) return std::uint64_t{};
+    const auto lifecycle = [&](std::optional<std::uint64_t> target) {
+        if (!target) return std::uint64_t{};
         const auto start = address();
         bytes.insert(bytes.end(), {0x31, 0xff, 0x31, 0xf6, 0x31, 0xd2, 0xe9});
-        const auto displacement = static_cast<std::int64_t>(target) - static_cast<std::int64_t>(address() + 4);
+        const auto displacement = static_cast<std::int64_t>(*target) - static_cast<std::int64_t>(address() + 4);
         if (displacement < std::numeric_limits<std::int32_t>::min() || displacement > std::numeric_limits<std::int32_t>::max()) throw Domain::RelinkerException("Guest initializer exceeds relative branch range");
         Io::AppendU32(bytes, static_cast<std::uint32_t>(displacement));
         return start;

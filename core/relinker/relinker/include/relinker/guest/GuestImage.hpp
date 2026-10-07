@@ -6,6 +6,7 @@
 #include <domain/GuestPlatform.hpp>
 #include <relinker/domain/ISyscallScanner.hpp>
 #include <filesystem>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -37,8 +38,9 @@ struct GuestImage {
     Domain::SysVDynamicSection Dynamic;
     std::vector<std::uint64_t> InitArray;
     std::vector<std::uint64_t> FiniArray;
-    std::uint64_t Init = 0;
-    std::uint64_t Fini = 0;
+    Domain::GuestPlatform Platform = Domain::GuestPlatform::Ps5;
+    std::optional<std::uint64_t> Init;
+    std::optional<std::uint64_t> Fini;
     std::uint64_t Got = 0;
     bool UsePlatformTlsResolver = true;
 };

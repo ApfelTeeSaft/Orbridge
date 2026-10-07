@@ -75,9 +75,9 @@ void profiles() {
     require(Domain::PlatformProfile(GuestPlatform::Ps4).NeededModuleTag == 0x6100000f, "Unexpected PS4 needed module tag");
     require(Domain::PlatformProfile(GuestPlatform::Ps5).NeededModuleTag == 0x61000045, "Unexpected PS5 needed module tag");
     const auto& ps4 = Domain::PlatformProfile(GuestPlatform::Ps4);
-    require(ps4.SceTablesInDynamicData && ps4.LoadsSceRelro && ps4.DropsInterpreter && ps4.DeclaresTextRelocations && ps4.ExecutableType == 0xfe10, "Unexpected PS4 format traits");
+    require(ps4.SceTablesInDynamicData && ps4.LoadsSceRelro && ps4.DropsInterpreter && ps4.DeclaresTextRelocations && ps4.CodeSharesSegmentWithReadOnlyData && ps4.ZeroInitFiniIsFunction && ps4.ResolvesGuestImportsByModule && ps4.ExecutableType == 0xfe10, "Unexpected PS4 format traits");
     const auto& ps5 = Domain::PlatformProfile(GuestPlatform::Ps5);
-    require(!ps5.SceTablesInDynamicData && !ps5.LoadsSceRelro && !ps5.DropsInterpreter && !ps5.DeclaresTextRelocations && !ps5.ExecutableType, "The PS5 format traits changed");
+    require(!ps5.SceTablesInDynamicData && !ps5.LoadsSceRelro && !ps5.DropsInterpreter && !ps5.DeclaresTextRelocations && !ps5.CodeSharesSegmentWithReadOnlyData && !ps5.ZeroInitFiniIsFunction && !ps5.ResolvesGuestImportsByModule && !ps5.ExecutableType, "The PS5 format traits changed");
     require(Domain::PlatformName(GuestPlatform::Ps4) == "PS4" && Domain::PlatformName(GuestPlatform::Ps5) == "PS5", "Unexpected platform names");
 }
 
