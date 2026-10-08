@@ -48,6 +48,9 @@ void PadInput::openFirstAvailableController() {
 }
 
 void PadInput::openController(int deviceIndex) {
+    const char* disableController = std::getenv("APS5_DISABLE_GAMECONTROLLER");
+    if (disableController != nullptr && disableController[0] != '\0' &&
+        !(disableController[0] == '0' && disableController[1] == '\0')) return;
     if (controller != nullptr || !SDL_IsGameController(deviceIndex)) return;
     controller = SDL_GameControllerOpen(deviceIndex);
     if (controller == nullptr) {
