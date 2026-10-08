@@ -72,6 +72,11 @@ add_custom_command(
         COMMENT "Patching NIDs for libc"
 )
 
+# Building a SHARED library target only produces its intermediate
+# libs/unpatched/*.prx. This explicit target produces the runnable NID-patched
+# binary in libs/*.prx without rebuilding every native library.
+add_custom_target(libc_patched DEPENDS ${LIBC_PATCHED})
+
 file(GLOB LIBS_DIRS LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/prx/*)
 list(REMOVE_ITEM LIBS_DIRS ${LIBC_DIR})
 
@@ -123,6 +128,9 @@ foreach(LIB_DIR ${LIBS_DIRS})
                 DEPENDS nid_patcher ${LIB_NAME} ${UNPATCHED_FILE} ${LIBC_UNPATCHED}
                 COMMENT "Patching NIDs for ${LIB_NAME}"
         )
+
+        # An explicit target for building one usable, NID-patched PRX.
+        add_custom_target(${LIB_NAME}_patched DEPENDS ${PATCHED_FILE})
 
         list(APPEND PATCHED_OUTPUTS ${PATCHED_FILE})
     endif()
