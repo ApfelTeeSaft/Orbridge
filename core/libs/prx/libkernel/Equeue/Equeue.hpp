@@ -15,6 +15,7 @@
 #include "prx/libkernel/Time/include/TimedWait.hpp"
 
 static constexpr int16_t EVFILT_READ = -1;
+static constexpr int16_t EVFILT_WRITE = -2;
 static constexpr int16_t EVFILT_TIMER = -7;
 static constexpr int16_t EVFILT_USER = -11;
 static constexpr int16_t EVFILT_VIDEO_OUT = -13;
