@@ -431,6 +431,9 @@ int APS5_VABI sceKernelDeleteUserEvent(KernelEqueue eq, int id) {
 int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData) {
     if (!EqueuePin_nid_postfix(eq)) return SCE_KERNEL_ERROR_EBADF;
     if (fd < 0) return SCE_KERNEL_ERROR_EBADF;
+    // The current poller reports a readiness bit, not the byte count
+    // required to honor low-water thresholds greater than one.
+    if (lowWater > 1) return SCE_KERNEL_ERROR_EOPNOTSUPP;
     const auto poller = KernelGetSocketPoller_nid_no_patch();
     if (!poller) return SCE_KERNEL_ERROR_EOPNOTSUPP;
 
@@ -446,9 +449,6 @@ int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t lowWate
     event.event.filter = EVFILT_READ;
     event.event.flags = EV_ADD | EV_CLEAR;
     event.event.udata = userData;
-    // The poller exposes readiness only; full low-water mark byte accounting
-    // requires a future extension to the socket provider. It is not faked.
-    (void)lowWater;
     return EqueueAddEvent_nid_postfix(eq, event);
 }
 
