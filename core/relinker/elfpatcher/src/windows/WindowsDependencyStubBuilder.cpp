@@ -646,6 +646,13 @@ WindowsDependencyStub WindowsDependencyStubBuilder::Build(WindowsStubEmitter& co
     a.Value(Dx, 0xffffffffu);
     a.Compare(Ax, Dx);
     a.Jump("diagnoseRootPresent", 0x85);
+    a.Api("GetLastError");
+    a.CompareValue(Ax, 2); // ERROR_FILE_NOT_FOUND
+    a.Jump("diagnoseRootMissing", 0x84);
+    a.CompareValue(Ax, 3); // ERROR_PATH_NOT_FOUND
+    a.Jump("diagnoseRootMissing", 0x84);
+    a.Jump("io"); // Access denied or other errors are not "file missing".
+    a.Mark("diagnoseRootMissing");
     a.Text("missingModule");
     a.Mov(Cx, Bx);
     a.Call("write");
