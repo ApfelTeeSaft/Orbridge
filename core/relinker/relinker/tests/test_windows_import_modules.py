@@ -107,6 +107,26 @@ def executable(owner, symbol='shared#A#B', module_name=None, extra_dependencies=
     return image
 
 
+def executable_with_two_missing_imports():
+    # Two independent relocations in the synthetic ELF main executable.
+    # The native provider exports neither alpha nor beta.
+    image = executable('a.prx', 'alpha#A#B')
+    strings = b'\\0alpha#A#B\\0a.prx\\0beta#A#B\\0'
+    image[0x4800:0x4800 + len(strings)] = strings
+    struct.pack_into('<IIIII', image, 0x4840, 1, 3, 1, 0, 0)
+    struct.pack_into('<IBBHQQ', image, 0x48b0, strings.index(b'beta#A#B'),
+                     0x12, 0, 0, 0, 0)
+    struct.pack_into('<QQq', image, 0x4918, 0x4a28, (2 << 32) | 6, 0)
+    # DT_STRSZ and DT_RELASZ in the synthetic executable's PT_DYNAMIC.
+    for index in range(12):
+        tag, value = struct.unpack_from('<qQ', image, 0x4600 + 16 * index)
+        if tag == 10:
+            struct.pack_into('<Q', image, 0x4600 + 16 * index + 8, len(strings))
+        if tag == 8:
+            struct.pack_into('<Q', image, 0x4600 + 16 * index + 8, 48)
+    return image
+
+
 def shell_execute_exit_code(executable_path):
     see_mask_nocloseprocess = 0x00000040
     wait_object_0 = 0
@@ -203,6 +223,26 @@ def main():
                 assert run.returncode == (11 if owner == 'a.prx' else 22), (run.returncode, run.stdout, run.stderr)
 
         check_internal_guest_libc(convert, work, relinker)
+        # Diagnostic mode must enumerate all missing NIDs while refusing to
+        # transfer control to the guest with unresolved GOT slots.
+        case = work / 'multiple-missing-imports'
+        modules = case / 'prx'
+        modules.mkdir(parents=True)
+        (modules / 'a.prx').write_bytes(provider(11))
+        source = case / 'input.elf'
+        source.write_bytes(executable_with_two_missing_imports())
+        output = case / 'output.exe'
+        result = subprocess.run([str(relinker), '--windows', '--windows-diagnostics',
+                                 str(source), str(output)], capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        if os.name == 'nt':
+            run = subprocess.run([str(output)], capture_output=True, text=True, timeout=30)
+            assert run.returncode != 0, (run.returncode, run.stderr)
+            assert 'unresolved ELF import alpha from a.prx' in run.stderr, run.stderr
+            assert 'unresolved ELF import beta from a.prx' in run.stderr, run.stderr
+            assert run.stderr.count('Searched libraries:') == 1, run.stderr
+            assert 'Transferring control to ELF entry point' not in run.stdout, run.stdout
+
 
         for filename, module_name in [('foo.native.prx', 'foo_native'),
                                       ('libSceFont-module.prx', 'libSceFont')]:
