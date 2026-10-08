@@ -184,7 +184,13 @@ FlipRequest::~FlipRequest() {
 }
 
 void FlipRequest::GpuReady(const std::shared_ptr<AgcDriver::FrameTiming>& frameTiming) {
-    VideoOutTrace("gpu_ready index=%d argument=%lld", index, static_cast<long long>(flipArg));
+    if (VideoOutTraceEnabled()) {
+        static std::atomic<unsigned long long> readyCount{0};
+        const auto count = readyCount.fetch_add(1, std::memory_order_relaxed);
+        if (count < 48 || count % 120 == 0)
+            VideoOutTrace("gpu_ready #%llu index=%d argument=%lld",
+                count + 1, index, static_cast<long long>(flipArg));
+    }
     require(frameTiming != nullptr, "missing frame timing");
     timing = frameTiming;
     {
