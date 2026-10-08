@@ -30,6 +30,8 @@ struct GuestImage {
     std::string Soname;
     std::vector<std::uint8_t> Bytes;
     std::vector<Codegen::TrampolineSite> Trampolines;
+    // Verified guest _umtx_op WAIT wrappers converted into Windows wait stubs.
+    std::vector<Domain::VirtualAddress> WindowsUmtxWaitSites;
     std::vector<Domain::ProgramHeader> Headers;
     std::vector<GuestSymbol> Symbols;
     std::vector<std::string> Dependencies;
