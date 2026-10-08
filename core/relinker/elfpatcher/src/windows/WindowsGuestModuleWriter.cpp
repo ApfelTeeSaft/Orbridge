@@ -235,7 +235,7 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteWindows(const Relinker::GuestI
     nextRva = AlignRva(nextRva + data.size());
     sections.push_back(std::move(exportSection));
     if (tlsIndex != 0 || !guest.WindowsUmtxWaitSites.empty()) {
-        auto imports = WindowsImportBuilder().Build(nextRva);
+        auto imports = WindowsImportBuilder().Build(nextRva, !guest.WindowsUmtxWaitSites.empty());
         directories[1] = imports.Directory;
         directories[12] = imports.AddressTable;
         nextRva = AlignRva(nextRva + imports.Section.Data.size());
