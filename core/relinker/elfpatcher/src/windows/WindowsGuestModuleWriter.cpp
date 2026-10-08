@@ -39,7 +39,7 @@ void emitWindowsUmtxWaitStubs(const Relinker::GuestImage& guest,
                          section->Data.begin() + offset + 5,
                          [](std::uint8_t value) { return value == 0x90; }))
             throw Domain::RelinkerException("umtx WAIT site changed before Windows patching", address);
-        Io::AlignBuffer(bodies, 16, 0xcc);
+        bodies.resize(Io::AlignUp(bodies.size(), std::size_t{16}), 0xcc);
         const auto stubRva = CheckedRva(sectionRva + bodies.size());
         WindowsStubEmitter code(stubRva);
         // Original SysV syscall registers: rax=454, rdi=(address|bit63),
