@@ -123,6 +123,9 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     }
 
     const auto lastError = reserve(4);
+    // Only used with --windows-diagnostics: count missing imports while
+    // resolving every symbol, before the guest entry point is reached.
+    const auto unresolvedCount = reserve(4);
     const auto errorDigits = reserve(11);
     const auto errorMessage = reserve(ErrorMessageCapacity);
     const auto loading = addString("Loading PRX: ");
@@ -363,7 +366,15 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         }
         captureLastError();
         writeString(errorRvas.at(3 + index), true);
-        unresolvedBranches.push_back(code.Branch({0xe9}));
+        std::optional<std::size_t> skipUnresolved;
+        if (dependencyDiagnostics) {
+            // Report *all* unresolved imports; leave their slots untouched.
+            // Do not initialize guest modules or execute the ELF if any fail.
+            code.Rip({0xff, 0x05}, unresolvedCount); // inc dword ptr [rip + count]
+            skipUnresolved = code.Branch({0xe9});
+        } else {
+            unresolvedBranches.push_back(code.Branch({0xe9}));
+        }
         code.PatchBranch(resolved, code.GetRva());
         if (imports[index].RelocationType == 16) code.Emit({0x48, 0x8b, 0x00});
         if (imports[index].RelocationType == 17) code.Emit({0x48, 0x8b, 0x40, 8});
@@ -373,6 +384,23 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
             code.Emit({0x48, 0x01, 0xd0});
         }
         guestStartup.WriteImport(code, imports[index], handles);
+        if (skipUnresolved.has_value())
+            code.PatchBranch(*skipUnresolved, code.GetRva());
+    }
+
+    if (dependencyDiagnostics) {
+        code.Rip({0x83, 0x3d}, unresolvedCount); // cmp dword ptr [rip + count], 0
+        code.Emit({0});
+        const allResolved = code.Branch({0x0f, 0x84});
+        writeString(searched, true);
+        for (const auto resolvedPath : resolvedPaths) {
+            writeString(indent, true);
+            writeString(resolvedPath, true);
+            writeString(newline, true);
+        }
+        writeLastError();
+        raise(0xc0000139u);
+        code.PatchBranch(allResolved, code.GetRva());
     }
 
     guestStartup.Initialize(code, guestModules, handles);
