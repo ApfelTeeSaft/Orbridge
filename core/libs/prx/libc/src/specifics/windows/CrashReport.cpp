@@ -261,6 +261,18 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     Report("\nFATAL: unhandled exception 0x%08lx on thread %lu '%s'\n", record->ExceptionCode, GetCurrentThreadId(), threadName);
     DescribeAddress(context->Rip, line, sizeof(line));
     Report("  rip %s\n", line);
+    // The short module label is not enough to distinguish the system
+    // DirectInput runtime from a same-named game-local proxy or injected DLL.
+    // Print the actual loaded module path on a fatal exception.
+    HMODULE faultModule = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(context->Rip), &faultModule) && faultModule) {
+        char modulePath[32768] = {};
+        const DWORD count = GetModuleFileNameA(faultModule, modulePath, sizeof(modulePath));
+        if (count != 0 && count < sizeof(modulePath))
+            Report("  fault module path: %s\n", modulePath);
+    }
     if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
         std::uint8_t bytes[8];
         const std::size_t available = ReadCode(context->Rip, bytes, sizeof(bytes));
