@@ -1,5 +1,6 @@
 #include "Equeue.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
+#include "prx/libkernel/Socket/include/SocketPoll.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -59,6 +60,42 @@ void KernelEqueuePrivate::TriggerExpiredTimers(uint64_t nowNs) {
     }
 }
 
+// Poll the libSceNet descriptor provider without blocking. Socket handles are
+// guest descriptors, not CRT file descriptors or native Windows SOCKET values.
+// Never call WSAPoll directly on the guest descriptor.
+bool KernelEqueuePrivate::HasReadEvents() const {
+    return std::any_of(m_events.begin(), m_events.end(), [](const auto& event) {
+        return event.event.filter == EVFILT_READ;
+    });
+}
+
+void KernelEqueuePrivate::RefreshReadEvents() {
+    const auto poller = KernelGetSocketPoller_nid_no_patch();
+    for (auto& event : m_events) {
+        if (event.event.filter != EVFILT_READ) continue;
+        if (!poller) {
+            event.triggered = true;
+            event.event.flags |= EV_ERROR;
+            event.event.data = SCE_KERNEL_ERROR_EOPNOTSUPP;
+            continue;
+        }
+        KernelSocketPoll::Entry entry{static_cast<int>(event.event.ident), KernelSocketPoll::Readable, 0};
+        const int result = poller(&entry, 1, 0);
+        if (result < 0 || (entry.revents & KernelSocketPoll::Unknown) != 0) {
+            event.triggered = true;
+            event.event.flags |= EV_ERROR;
+            event.event.data = result < 0 ? SceKernelError(-result) : SCE_KERNEL_ERROR_EBADF;
+        } else {
+            event.event.flags &= static_cast<uint16_t>(~EV_ERROR);
+            event.triggered = (entry.revents & (KernelSocketPoll::Readable |
+                                                KernelSocketPoll::HangUp |
+                                                KernelSocketPoll::Error)) != 0;
+            // The socket poller reports readiness, not a byte count.
+            event.event.data = 0;
+        }
+    }
+}
+
 bool KernelEqueuePrivate::NextTimerWaitMicros(uint64_t nowNs, uint32_t* out) const {
     uint64_t nearest = std::numeric_limits<uint64_t>::max();
     for (const auto& ev : m_events) {
@@ -81,6 +118,7 @@ int KernelEqueuePrivate::GetTriggeredEvents(KernelEvent* ev, int num) {
         return SCE_KERNEL_ERROR_EBADF;
     }
     TriggerExpiredTimers(MonotonicNs());
+    RefreshReadEvents();
     int ret = 0;
     for (auto it = m_events.begin(); it != m_events.end();) {
         auto& e = *it;
@@ -123,6 +161,7 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
     const std::uint64_t deadline = TimedWait::DeadlineNanos(micros);
     for (;;) {
         TriggerExpiredTimers(MonotonicNs());
+        RefreshReadEvents();
         int ret = 0;
         for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
             auto& e = *it;
@@ -157,23 +196,22 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
         if (m_closed) {
             return SCE_KERNEL_ERROR_EBADF;
         }
-        if (micros == 0) {
-            uint32_t timerWait = 0;
-            if (NextTimerWaitMicros(MonotonicNs(), &timerWait)) {
-                m_cond.WaitUntil(lock, TimedWait::NowNanos() + static_cast<std::uint64_t>(timerWait) * 1000ULL);
-            } else {
-                m_cond.Wait(lock);
-            }
-        } else {
-            uint32_t timerWait = 0;
-            const bool hasTimer = NextTimerWaitMicros(MonotonicNs(), &timerWait);
-            const std::uint64_t now = TimedWait::NowNanos();
-            if (now >= deadline) {
-                return 0;
-            }
-            const std::uint64_t timerDeadline = now + static_cast<std::uint64_t>(timerWait) * 1000ULL;
-            m_cond.WaitUntil(lock, hasTimer ? std::min(deadline, timerDeadline) : deadline);
+        // libSceNet's poller is nonblocking, so revisit pending read
+        // watchers periodically. Keep the queue lock released while sleeping,
+        // allowing concurrent trigger/deletion, and retain timer deadlines.
+        uint32_t timerWait = 0;
+        const bool hasTimer = NextTimerWaitMicros(MonotonicNs(), &timerWait);
+        const std::uint64_t now = TimedWait::NowNanos();
+        if (micros != 0 && now >= deadline) return 0;
+        const bool hasRead = HasReadEvents();
+        if (!hasTimer && !hasRead && micros == 0) {
+            m_cond.Wait(lock);
+            continue;
         }
+        std::uint64_t wake = micros == 0 ? std::numeric_limits<std::uint64_t>::max() : deadline;
+        if (hasTimer) wake = std::min(wake, now + static_cast<std::uint64_t>(timerWait) * 1000ULL);
+        if (hasRead) wake = std::min(wake, now + 10'000'000ULL); // 10 ms
+        m_cond.WaitUntil(lock, wake);
     }
 }
 
@@ -388,6 +426,30 @@ int APS5_VABI sceKernelTriggerUserEvent(KernelEqueue eq, int id, void* udata) {
 
 int APS5_VABI sceKernelDeleteUserEvent(KernelEqueue eq, int id) {
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_USER);
+}
+
+int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData) {
+    if (!EqueuePin_nid_postfix(eq)) return SCE_KERNEL_ERROR_EBADF;
+    if (fd < 0) return SCE_KERNEL_ERROR_EBADF;
+    const auto poller = KernelGetSocketPoller_nid_no_patch();
+    if (!poller) return SCE_KERNEL_ERROR_EOPNOTSUPP;
+
+    // Probe the descriptor against the existing libSceNet table rather than
+    // accepting unknown host/guest descriptors and silently never firing.
+    KernelSocketPoll::Entry probe{fd, KernelSocketPoll::Readable, 0};
+    const int status = poller(&probe, 1, 0);
+    if (status < 0) return SceKernelError(-status);
+    if ((probe.revents & KernelSocketPoll::Unknown) != 0) return SCE_KERNEL_ERROR_EBADF;
+
+    KernelEqueueEvent event{};
+    event.event.ident = static_cast<uintptr_t>(fd);
+    event.event.filter = EVFILT_READ;
+    event.event.flags = EV_ADD | EV_CLEAR;
+    event.event.udata = userData;
+    // The poller exposes readiness only; full low-water mark byte accounting
+    // requires a future extension to the socket provider. It is not faked.
+    (void)lowWater;
+    return EqueueAddEvent_nid_postfix(eq, event);
 }
 
 int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd) {
