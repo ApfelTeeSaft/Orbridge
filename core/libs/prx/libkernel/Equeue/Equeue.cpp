@@ -60,26 +60,28 @@ void KernelEqueuePrivate::TriggerExpiredTimers(uint64_t nowNs) {
     }
 }
 
-// Poll the libSceNet descriptor provider without blocking. Socket handles are
-// guest descriptors, not CRT file descriptors or native Windows SOCKET values.
-// Never call WSAPoll directly on the guest descriptor.
-bool KernelEqueuePrivate::HasReadEvents() const {
+// Poll the libSceNet descriptor provider without blocking. Guest socket
+// identifiers are not CRT file descriptors or native Windows SOCKET handles.
+bool KernelEqueuePrivate::HasSocketEvents() const {
     return std::any_of(m_events.begin(), m_events.end(), [](const auto& event) {
-        return event.event.filter == EVFILT_READ;
+        return event.event.filter == EVFILT_READ || event.event.filter == EVFILT_WRITE;
     });
 }
 
-void KernelEqueuePrivate::RefreshReadEvents() {
+void KernelEqueuePrivate::RefreshSocketEvents() {
     const auto poller = KernelGetSocketPoller_nid_no_patch();
     for (auto& event : m_events) {
-        if (event.event.filter != EVFILT_READ) continue;
+        const auto filter = event.event.filter;
+        if (filter != EVFILT_READ && filter != EVFILT_WRITE) continue;
         if (!poller) {
             event.triggered = true;
             event.event.flags |= EV_ERROR;
             event.event.data = SCE_KERNEL_ERROR_EOPNOTSUPP;
             continue;
         }
-        KernelSocketPoll::Entry entry{static_cast<int>(event.event.ident), KernelSocketPoll::Readable, 0};
+        const short requested = filter == EVFILT_READ
+            ? KernelSocketPoll::Readable : KernelSocketPoll::Writable;
+        KernelSocketPoll::Entry entry{static_cast<int>(event.event.ident), requested, 0};
         const int result = poller(&entry, 1, 0);
         if (result < 0 || (entry.revents & KernelSocketPoll::Unknown) != 0) {
             event.triggered = true;
@@ -87,10 +89,10 @@ void KernelEqueuePrivate::RefreshReadEvents() {
             event.event.data = result < 0 ? SceKernelError(-result) : SCE_KERNEL_ERROR_EBADF;
         } else {
             event.event.flags &= static_cast<uint16_t>(~EV_ERROR);
-            event.triggered = (entry.revents & (KernelSocketPoll::Readable |
+            event.triggered = (entry.revents & (requested |
                                                 KernelSocketPoll::HangUp |
                                                 KernelSocketPoll::Error)) != 0;
-            // The socket poller reports readiness, not a byte count.
+            // The existing poller reports readiness, not a byte count.
             event.event.data = 0;
         }
     }
@@ -118,7 +120,7 @@ int KernelEqueuePrivate::GetTriggeredEvents(KernelEvent* ev, int num) {
         return SCE_KERNEL_ERROR_EBADF;
     }
     TriggerExpiredTimers(MonotonicNs());
-    RefreshReadEvents();
+    RefreshSocketEvents();
     int ret = 0;
     for (auto it = m_events.begin(); it != m_events.end();) {
         auto& e = *it;
@@ -161,7 +163,7 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
     const std::uint64_t deadline = TimedWait::DeadlineNanos(micros);
     for (;;) {
         TriggerExpiredTimers(MonotonicNs());
-        RefreshReadEvents();
+        RefreshSocketEvents();
         int ret = 0;
         for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
             auto& e = *it;
@@ -203,14 +205,14 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
         const bool hasTimer = NextTimerWaitMicros(MonotonicNs(), &timerWait);
         const std::uint64_t now = TimedWait::NowNanos();
         if (micros != 0 && now >= deadline) return 0;
-        const bool hasRead = HasReadEvents();
-        if (!hasTimer && !hasRead && micros == 0) {
+        const bool hasSocket = HasSocketEvents();
+        if (!hasTimer && !hasSocket && micros == 0) {
             m_cond.Wait(lock);
             continue;
         }
         std::uint64_t wake = micros == 0 ? std::numeric_limits<std::uint64_t>::max() : deadline;
         if (hasTimer) wake = std::min(wake, now + static_cast<std::uint64_t>(timerWait) * 1000ULL);
-        if (hasRead) wake = std::min(wake, now + 10'000'000ULL); // 10 ms
+        if (hasSocket) wake = std::min(wake, now + 10'000'000ULL); // 10 ms
         m_cond.WaitUntil(lock, wake);
     }
 }
@@ -456,6 +458,26 @@ int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd) {
     // The read and write filters are separate registrations on the same
     // descriptor. Only remove EVFILT_READ, preserving other queue entries.
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_READ);
+}
+
+int APS5_VABI sceKernelAddWriteEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData) {
+    if (!EqueuePin_nid_postfix(eq)) return SCE_KERNEL_ERROR_EBADF;
+    if (fd < 0) return SCE_KERNEL_ERROR_EBADF;
+    if (lowWater > 1) return SCE_KERNEL_ERROR_EOPNOTSUPP;
+    const auto poller = KernelGetSocketPoller_nid_no_patch();
+    if (!poller) return SCE_KERNEL_ERROR_EOPNOTSUPP;
+
+    KernelSocketPoll::Entry probe{fd, KernelSocketPoll::Writable, 0};
+    const int status = poller(&probe, 1, 0);
+    if (status < 0) return SceKernelError(-status);
+    if ((probe.revents & KernelSocketPoll::Unknown) != 0) return SCE_KERNEL_ERROR_EBADF;
+
+    KernelEqueueEvent event{};
+    event.event.ident = static_cast<uintptr_t>(fd);
+    event.event.filter = EVFILT_WRITE;
+    event.event.flags = EV_ADD | EV_CLEAR;
+    event.event.udata = userData;
+    return EqueueAddEvent_nid_postfix(eq, event);
 }
 
 int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd) {
