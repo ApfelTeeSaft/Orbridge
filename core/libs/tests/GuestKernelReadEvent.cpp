@@ -49,6 +49,7 @@ int main() {
     Require(sceKernelAddReadEvent(0, TestDescriptor, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
     Require(sceKernelAddReadEvent(queue, -1, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
     Require(sceKernelAddReadEvent(queue, 999, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
+    Require(sceKernelAddReadEvent(queue, TestDescriptor, 2, nullptr) == SCE_KERNEL_ERROR_EOPNOTSUPP);
 
     int userdata = 99;
     Require(sceKernelAddReadEvent(queue, TestDescriptor, 1, &userdata) == EQUEUE_OK);
