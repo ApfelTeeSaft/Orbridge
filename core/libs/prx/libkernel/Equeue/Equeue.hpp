@@ -73,8 +73,8 @@ public:
 
 private:
     void TriggerExpiredTimers(uint64_t nowNs);
-    void RefreshReadEvents();
-    bool HasReadEvents() const;
+    void RefreshSocketEvents();
+    bool HasSocketEvents() const;
     bool NextTimerWaitMicros(uint64_t nowNs, uint32_t* out) const;
 
     std::list<KernelEqueueEvent> m_events;
