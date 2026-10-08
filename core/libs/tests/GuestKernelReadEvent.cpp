@@ -5,6 +5,9 @@
 
 #include <cstdlib>
 #include <cstddef>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 extern "C" {
 int APS5_VABI sceKernelCreateEqueue(KernelEqueue* eq, const char* name);
@@ -23,7 +26,7 @@ static void Require(bool value) {
 
 namespace {
 constexpr int TestDescriptor = 42;
-bool g_readReady = false;
+std::atomic<bool> g_readReady{false};
 
 // Model libSceNet's guest-descriptor table: unknown descriptors must never
 // be treated as if they were host file handles or live sockets.
@@ -31,7 +34,7 @@ int FakeSocketPoller(KernelSocketPoll::Entry* entries, int count, int timeoutMs)
     Require(count == 1 && timeoutMs == 0 && entries != nullptr);
     auto& entry = entries[0];
     entry.revents = entry.descriptor == TestDescriptor
-        ? (g_readReady ? KernelSocketPoll::Readable : 0)
+        ? (g_readReady.load(std::memory_order_relaxed) ? KernelSocketPoll::Readable : 0)
         : KernelSocketPoll::Unknown;
     return entry.revents == KernelSocketPoll::Readable ? 1 : 0;
 }
@@ -59,6 +62,17 @@ int main() {
     Require(sceKernelWaitEqueue(queue, &received, 1, &receivedCount, &zeroTimeout)
             == SCE_KERNEL_ERROR_ETIMEDOUT);
     Require(receivedCount == 0);
+
+    // A blocking wait must eventually notice a socket becoming readable,
+    // even when no other thread signals the equeue condition variable.
+    std::thread producer([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        g_readReady.store(true, std::memory_order_relaxed);
+    });
+    constexpr KernelUseconds finiteTimeout = 250'000;
+    const int waited = sceKernelWaitEqueue(queue, &received, 1, &receivedCount, &finiteTimeout);
+    producer.join();
+    Require(waited == EQUEUE_OK && receivedCount == 1 && received.filter == EVFILT_READ);
 
     g_readReady = true;
     Require(sceKernelWaitEqueue(queue, &received, 1, &receivedCount, &zeroTimeout) == EQUEUE_OK);
