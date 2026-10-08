@@ -396,6 +396,13 @@ int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd) {
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_READ);
 }
 
+int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd) {
+    // Delete only the descriptor's write registration, not a READ or USER
+    // event with the same identifier. The queue helper checks handle
+    // validity and whether the registration exists.
+    return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_WRITE);
+}
+
 int APS5_VABI sceKernelAddHRTimerEvent(KernelEqueue eq, int id, const KernelTimespec* ts, void* udata) {
     if (ts == nullptr) {
         return SCE_KERNEL_ERROR_EFAULT;
