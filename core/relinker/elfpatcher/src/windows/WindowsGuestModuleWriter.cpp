@@ -5,12 +5,91 @@
 #include <elfpatcher/windows/WindowsPeWriter.hpp>
 #include <elfpatcher/windows/WindowsRelocationBuilder.hpp>
 #include <elfpatcher/windows/WindowsTrampolineBuilder.hpp>
+#include <elfpatcher/windows/WindowsStubEmitter.hpp>
 #include <io/BufferUtils.hpp>
 #include <algorithm>
 #include <map>
 #include <iterator>
 
 namespace Elfpatcher {
+
+namespace {
+
+void emitWindowsUmtxWaitStubs(const Relinker::GuestImage& guest,
+                             const Windows::WindowsLoadImage& image,
+                             std::vector<Windows::PeSection>& sections,
+                             std::uint32_t& nextRva,
+                             const Windows::WindowsImports& imports) {
+    using namespace Windows;
+    if (guest.WindowsUmtxWaitSites.empty()) return;
+    const auto iat = imports.Functions.at("WaitOnAddress");
+    const auto sectionRva = nextRva;
+    std::vector<std::uint8_t> bodies;
+    for (const auto address : guest.WindowsUmtxWaitSites) {
+        const auto siteRva = image.GetRva(address, 5);
+        // Each site has been validated against the exact libc WAIT wrapper.
+        auto section = std::find_if(sections.begin(), sections.end(), [&](const auto& entry) {
+            return siteRva >= entry.Rva && siteRva - entry.Rva <= entry.Data.size() &&
+                   entry.Data.size() - (siteRva - entry.Rva) >= 5;
+        });
+        if (section == sections.end())
+            throw Domain::RelinkerException("umtx WAIT site is outside the guest image", address);
+        const auto offset = static_cast<std::size_t>(siteRva - section->Rva);
+        if (!std::all_of(section->Data.begin() + offset,
+                         section->Data.begin() + offset + 5,
+                         [](std::uint8_t value) { return value == 0x90; }))
+            throw Domain::RelinkerException("umtx WAIT site changed before Windows patching", address);
+        Io::AlignBuffer(bodies, 16, 0xcc);
+        const auto stubRva = CheckedRva(sectionRva + bodies.size());
+        WindowsStubEmitter code(stubRva);
+        // Original SysV syscall registers: rax=454, rdi=(address|bit63),
+        // rsi=2, rdx=0, r10=(timespec or nullptr). The syscall also covers
+        // the following 3-byte test r10,r10 to make space for a 5-byte jump.
+        // Preserve the registers which a FreeBSD syscall does not clobber.
+        code.Emit({0x52, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x54});
+        code.Emit({0x49, 0x89, 0xe4, 0x48, 0x83, 0xe4, 0xf0, 0x48, 0x83, 0xec, 0x40});
+        // Windows INFINITE when there is no timeout. Convert the relative
+        // timespec to rounded-up milliseconds, capped below INFINITE.
+        code.Emit({0x41, 0xb9, 0xff, 0xff, 0xff, 0xff, 0x4d, 0x85, 0xd2});
+        const auto withoutTimeout = code.Branch({0x0f, 0x84});
+        code.Emit({0x4d, 0x8b, 0x0a, 0x4d, 0x69, 0xc9, 0xe8, 0x03, 0x00, 0x00});
+        code.Emit({0x49, 0x8b, 0x42, 0x08, 0x48, 0x05, 0x3f, 0x42, 0x0f, 0x00});
+        code.Emit({0x41, 0xbb, 0x40, 0x42, 0x0f, 0x00, 0x31, 0xd2, 0x49, 0xf7, 0xf3, 0x49, 0x01, 0xc1});
+        code.Emit({0x41, 0xbb, 0xfe, 0xff, 0xff, 0xff, 0x4d, 0x39, 0xd9});
+        const auto withinTimeout = code.Branch({0x0f, 0x86});
+        code.Emit({0x4d, 0x89, 0xd9});
+        code.PatchBranch(withinTimeout, code.GetRva());
+        code.PatchBranch(withoutTimeout, code.GetRva());
+        // WaitOnAddress(void* address, const void* zero, size_t size,
+        //               DWORD milliseconds), using Win64 shadow space.
+        code.Emit({0x48, 0xc7, 0x44, 0x24, 0x30, 0, 0, 0, 0});
+        code.Emit({0x48, 0x89, 0xf9, 0x48, 0x0f, 0xba, 0xf1, 0x3f});
+        code.Emit({0x48, 0x8d, 0x54, 0x24, 0x30, 0x41, 0xb8, 8, 0, 0, 0});
+        code.Rip({0xff, 0x15}, iat);
+        // Convert BOOL into FreeBSD kernel return values: 0 or ETIMEDOUT(60).
+        // Unknown failures remain errors, never silently report success.
+        code.Emit({0x85, 0xc0});
+        const auto success = code.Branch({0x0f, 0x85});
+        code.Emit({0xb8, 60, 0, 0, 0});
+        const auto finish = code.Branch({0xe9});
+        code.PatchBranch(success, code.GetRva());
+        code.Emit({0x31, 0xc0});
+        code.PatchBranch(finish, code.GetRva());
+        code.Emit({0x4c, 0x89, 0xe4, 0x41, 0x5c, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5a});
+        code.Emit({0x4d, 0x85, 0xd2}); // moved instruction: test r10,r10
+        code.Rip({0xe9}, CheckedRva(siteRva + 5));
+        auto stub = code.TakeBytes();
+        bodies.insert(bodies.end(), stub.begin(), stub.end());
+        WindowsStubEmitter jump(siteRva);
+        jump.Rip({0xe9}, stubRva);
+        const auto patch = jump.TakeBytes();
+        std::copy(patch.begin(), patch.end(), section->Data.begin() + offset);
+    }
+    sections.push_back({".umtx", sectionRva, SectionRead | SectionExecute | 0x20u, std::move(bodies)});
+    nextRva = AlignRva(sectionRva + sections.back().Data.size());
+}
+
+}
 
 std::vector<std::uint8_t> GuestModuleWriter::WriteWindows(const Relinker::GuestImage& guest, Domain::GuestRuntime& runtime) const {
     using namespace Windows;
@@ -155,12 +234,13 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteWindows(const Relinker::GuestI
     directories[0] = {nextRva, CheckedRva(data.size())};
     nextRva = AlignRva(nextRva + data.size());
     sections.push_back(std::move(exportSection));
-    if (tlsIndex != 0) {
+    if (tlsIndex != 0 || !guest.WindowsUmtxWaitSites.empty()) {
         auto imports = WindowsImportBuilder().Build(nextRva);
         directories[1] = imports.Directory;
         directories[12] = imports.AddressTable;
         nextRva = AlignRva(nextRva + imports.Section.Data.size());
         sections.push_back(std::move(imports.Section));
+        emitWindowsUmtxWaitStubs(guest, image, sections, nextRva, imports);
     }
     auto relocationData = WindowsRelocationBuilder().BuildBaseRelocations(relocations);
     if (!relocationData.empty()) {
