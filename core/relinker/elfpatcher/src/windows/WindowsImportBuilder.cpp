@@ -4,29 +4,49 @@
 
 namespace Elfpatcher::Windows {
 
-WindowsImports WindowsImportBuilder::Build(const std::uint32_t sectionRva) const {
-    const std::vector<std::string> names = {"ExitProcess", "FormatMessageA", "FreeLibrary", "GetCommandLineW", "GetFileAttributesA", "GetLastError", "GetModuleFileNameA", "GetModuleHandleA", "GetProcAddress", "GetStdHandle", "GetSystemDirectoryA", "LoadLibraryExA", "LocalFree", "RaiseException", "VirtualAlloc", "WaitOnAddress", "WideCharToMultiByte", "WriteFile", "lstrcatA", "lstrcmpA", "lstrcmpiA", "lstrcpyA", "lstrlenA"};
-    WindowsImports result{{".idata", sectionRva, SectionRead | SectionWrite | 0x40u, std::vector<std::uint8_t>(40)}, {sectionRva, 40}, {}, {}};
+WindowsImports WindowsImportBuilder::Build(const std::uint32_t sectionRva, const bool includeAddressWait) const {
+    // WaitOnAddress is imported from its documented API-set contract, not
+    // KERNEL32.dll (which is not guaranteed to export this entry point).
+    const std::vector<std::string> names = {"ExitProcess", "FormatMessageA", "FreeLibrary", "GetCommandLineW", "GetFileAttributesA", "GetLastError", "GetModuleFileNameA", "GetModuleHandleA", "GetProcAddress", "GetStdHandle", "GetSystemDirectoryA", "LoadLibraryExA", "LocalFree", "RaiseException", "VirtualAlloc", "WideCharToMultiByte", "WriteFile", "lstrcatA", "lstrcmpA", "lstrcmpiA", "lstrcpyA", "lstrlenA"};
+    const std::size_t groupCount = includeAddressWait ? 2 : 1;
+    const std::size_t descriptorBytes = (groupCount + 1) * 20;
+    WindowsImports result{{".idata", sectionRva, SectionRead | SectionWrite | 0x40u,
+                           std::vector<std::uint8_t>(descriptorBytes)},
+                          {sectionRva, CheckedRva(descriptorBytes)}, {}, {}};
     auto& bytes = result.Section.Data;
-    const auto lookupOffset = bytes.size();
+    const auto kernelLookup = bytes.size();
     bytes.resize(bytes.size() + (names.size() + 1) * 8);
-    const auto addressOffset = bytes.size();
+    const auto waitLookup = bytes.size();
+    if (includeAddressWait) bytes.resize(bytes.size() + 2 * 8);
+    const auto kernelAddresses = bytes.size();
     bytes.resize(bytes.size() + (names.size() + 1) * 8);
-    result.AddressTable = {CheckedRva(sectionRva + addressOffset), CheckedRva((names.size() + 1) * 8)};
-    for (std::size_t index = 0; index < names.size(); ++index) {
-        const auto nameRva = CheckedRva(sectionRva + bytes.size());
-        Io::AppendU16(bytes, 0);
-        Io::AppendString(bytes, names[index]);
-        Io::AlignBuffer(bytes, 2);
-        Io::WriteU64(bytes, lookupOffset + index * 8, nameRva);
-        Io::WriteU64(bytes, addressOffset + index * 8, nameRva);
-        result.Functions.emplace(names[index], CheckedRva(sectionRva + addressOffset + index * 8));
-    }
-    const auto libraryRva = CheckedRva(sectionRva + bytes.size());
-    Io::AppendString(bytes, "KERNEL32.dll");
-    Io::WriteU32(bytes, 0, CheckedRva(sectionRva + lookupOffset));
-    Io::WriteU32(bytes, 12, libraryRva);
-    Io::WriteU32(bytes, 16, CheckedRva(sectionRva + addressOffset));
+    const auto waitAddresses = bytes.size();
+    if (includeAddressWait) bytes.resize(bytes.size() + 2 * 8);
+    result.AddressTable = {CheckedRva(sectionRva + kernelAddresses),
+                           CheckedRva(bytes.size() - kernelAddresses)};
+
+    const auto addGroup = [&](std::size_t index, const std::string& library,
+                              const std::vector<std::string>& symbols,
+                              std::size_t lookup, std::size_t addresses) {
+        for (std::size_t symbol = 0; symbol < symbols.size(); ++symbol) {
+            const auto nameRva = CheckedRva(sectionRva + bytes.size());
+            Io::AppendU16(bytes, 0);
+            Io::AppendString(bytes, symbols[symbol]);
+            Io::AlignBuffer(bytes, 2);
+            Io::WriteU64(bytes, lookup + symbol * 8, nameRva);
+            Io::WriteU64(bytes, addresses + symbol * 8, nameRva);
+            result.Functions.emplace(symbols[symbol], CheckedRva(sectionRva + addresses + symbol * 8));
+        }
+        const auto libraryRva = CheckedRva(sectionRva + bytes.size());
+        Io::AppendString(bytes, library);
+        const auto descriptor = index * 20;
+        Io::WriteU32(bytes, descriptor, CheckedRva(sectionRva + lookup));
+        Io::WriteU32(bytes, descriptor + 12, libraryRva);
+        Io::WriteU32(bytes, descriptor + 16, CheckedRva(sectionRva + addresses));
+    };
+    addGroup(0, "KERNEL32.dll", names, kernelLookup, kernelAddresses);
+    if (includeAddressWait)
+        addGroup(1, "api-ms-win-core-synch-l1-2-0.dll", {"WaitOnAddress"}, waitLookup, waitAddresses);
     return result;
 }
 
