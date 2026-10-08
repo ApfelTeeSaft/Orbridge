@@ -141,6 +141,16 @@ if(BUILD_TESTING)
         set_tests_properties(guest_kernel_sync PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
+    add_test_executable(guest_kernel_read_event_tests ${LIBS_INCLUDE_DIR}/tests/GuestKernelReadEvent.cpp)
+    target_include_directories(guest_kernel_read_event_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_kernel_read_event_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_kernel_read_event_tests)
+    add_test(NAME guest_kernel_read_event COMMAND guest_kernel_read_event_tests)
+    if(WIN32)
+        set_tests_properties(guest_kernel_read_event PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+
     add_test_executable(guest_aio_tests ${LIBS_INCLUDE_DIR}/tests/GuestAio.cpp)
     target_include_directories(guest_aio_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_aio_tests PRIVATE libkernel libc)
