@@ -14,6 +14,7 @@ int APS5_VABI sceKernelCreateEqueue(KernelEqueue* eq, const char* name);
 int APS5_VABI sceKernelDeleteEqueue(KernelEqueue eq);
 int APS5_VABI sceKernelAddUserEvent(KernelEqueue eq, int id);
 int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData);
+int APS5_VABI sceKernelAddWriteEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData);
 int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd);
 int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd);
 int APS5_VABI sceKernelWaitEqueue(KernelEqueue eq, KernelEvent* events, int num, int* count,
@@ -27,16 +28,23 @@ static void Require(bool value) {
 namespace {
 constexpr int TestDescriptor = 42;
 std::atomic<bool> g_readReady{false};
+std::atomic<bool> g_writeReady{false};
 
 // Model libSceNet's guest-descriptor table: unknown descriptors must never
 // be treated as if they were host file handles or live sockets.
 int FakeSocketPoller(KernelSocketPoll::Entry* entries, int count, int timeoutMs) {
     Require(count == 1 && timeoutMs == 0 && entries != nullptr);
     auto& entry = entries[0];
-    entry.revents = entry.descriptor == TestDescriptor
-        ? (g_readReady.load(std::memory_order_relaxed) ? KernelSocketPoll::Readable : 0)
-        : KernelSocketPoll::Unknown;
-    return entry.revents == KernelSocketPoll::Readable ? 1 : 0;
+    if (entry.descriptor != TestDescriptor) {
+        entry.revents = KernelSocketPoll::Unknown;
+        return 0;
+    }
+    entry.revents = 0;
+    if ((entry.events & KernelSocketPoll::Readable) != 0 &&
+        g_readReady.load(std::memory_order_relaxed)) entry.revents |= KernelSocketPoll::Readable;
+    if ((entry.events & KernelSocketPoll::Writable) != 0 &&
+        g_writeReady.load(std::memory_order_relaxed)) entry.revents |= KernelSocketPoll::Writable;
+    return entry.revents != 0 ? 1 : 0;
 }
 }
 
@@ -53,6 +61,10 @@ int main() {
     Require(sceKernelAddReadEvent(queue, -1, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
     Require(sceKernelAddReadEvent(queue, 999, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
     Require(sceKernelAddReadEvent(queue, TestDescriptor, 2, nullptr) == SCE_KERNEL_ERROR_EOPNOTSUPP);
+    Require(sceKernelAddWriteEvent(0, TestDescriptor, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
+    Require(sceKernelAddWriteEvent(queue, -1, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
+    Require(sceKernelAddWriteEvent(queue, 999, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
+    Require(sceKernelAddWriteEvent(queue, TestDescriptor, 2, nullptr) == SCE_KERNEL_ERROR_EOPNOTSUPP);
 
     int userdata = 99;
     Require(sceKernelAddReadEvent(queue, TestDescriptor, 1, &userdata) == EQUEUE_OK);
@@ -87,11 +99,11 @@ int main() {
             == SCE_KERNEL_ERROR_ETIMEDOUT);
     Require(receivedCount == 0);
 
-    KernelEqueueEvent write{};
-    write.event.ident = static_cast<uintptr_t>(TestDescriptor);
-    write.event.filter = EVFILT_WRITE;
-    write.event.flags = EV_ADD;
-    Require(EqueueAddEvent_nid_postfix(queue, write) == EQUEUE_OK);
+    Require(sceKernelAddWriteEvent(queue, TestDescriptor, 1, &userdata) == EQUEUE_OK);
+    g_writeReady = true;
+    Require(sceKernelWaitEqueue(queue, &received, 1, &receivedCount, &zeroTimeout) == EQUEUE_OK);
+    Require(receivedCount == 1 && received.filter == EVFILT_WRITE && received.udata == &userdata);
+    g_writeReady = false;
 
     // All three filters share a descriptor. Deleting WRITE must leave READ
     // registered; deleting READ must preserve the user event.
@@ -108,7 +120,7 @@ int main() {
 
     // Reverse order: deleting READ does not affect WRITE.
     Require(sceKernelAddReadEvent(queue, TestDescriptor, 1, &userdata) == EQUEUE_OK);
-    Require(EqueueAddEvent_nid_postfix(queue, write) == EQUEUE_OK);
+    Require(sceKernelAddWriteEvent(queue, TestDescriptor, 1, &userdata) == EQUEUE_OK);
     Require(sceKernelDeleteReadEvent(queue, TestDescriptor) == EQUEUE_OK);
     Require(sceKernelDeleteWriteEvent(queue, TestDescriptor) == EQUEUE_OK);
 
