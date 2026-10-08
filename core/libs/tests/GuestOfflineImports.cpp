@@ -11,6 +11,7 @@
 extern "C" {
 int APS5_VABI sceHttpSetCookieEnabled(int, int);
 int APS5_VABI sceHttpSendRequest(int, const void*, std::size_t);
+int APS5_VABI sceHttp2WebSocketCreateRequest();
 int APS5_VABI sceNpEntitlementAccessGetEntitlementKey(
     std::uint32_t, const NpUnifiedEntitlementLabel*, NpEntitlementAccessEntitlementKey*);
 int APS5_VABI sceRudpInit_nid_postfix(void*, int);
@@ -25,6 +26,8 @@ int main() {
     constexpr int network = static_cast<int>(0x80431063);
     Require(sceHttpSetCookieEnabled(1, 0) == 0);
     Require(sceHttpSendRequest(1, nullptr, 0) == network);
+    // No WebSocket session is fabricated on the offline HTTP/2 backend.
+    Require(sceHttp2WebSocketCreateRequest() == network);
     bool cookieUnsupported = false;
     try {
         sceHttpSetCookieEnabled(1, 1);
