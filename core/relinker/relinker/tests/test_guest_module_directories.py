@@ -93,6 +93,28 @@ def main():
                     needed = needed_libraries(consumer.read_bytes())
                     assert needed == [f"$ORIGIN/{'../' + standard + '/' if standard else ''}provider.prx.guest.prx"], needed
 
+            case = work / f"{windows}-guest-syscall"
+            module_dir = case / "sce_module"
+            module_dir.mkdir(parents=True)
+            guest = guest_fixture(bytes.fromhex("0f 05 c3"))
+            (module_dir / "suspect.prx").write_bytes(guest)
+            result, output = convert(case, windows)
+            assert result.returncode == 2, (result.stdout, result.stderr)
+            assert "Forbidden syscall instruction" in result.stderr, result.stderr
+            assert "suspect.prx" in result.stderr, result.stderr
+            assert "guest file offset 0x402" in result.stderr, result.stderr
+            assert "offset 0x1002" in result.stderr, result.stderr
+            assert not output.exists(), output
+
+            case = work / f"{windows}-operand-signature"
+            module_dir = case / "sce_module"
+            module_dir.mkdir(parents=True)
+            # The syscall opcode occurs inside mov rax, [rip+disp32], not as an instruction.
+            (module_dir / "operand.prx").write_bytes(
+                guest_fixture(bytes.fromhex("48 8b 05 0f 05 00 00 c3")))
+            result, output = convert(case, windows)
+            assert result.returncode == 0 and output.exists(), (result.stdout, result.stderr)
+
             case = work / f"{windows}-exclude"
             for name in ("sce_module", "prx"):
                 (case / name).mkdir(parents=True)
