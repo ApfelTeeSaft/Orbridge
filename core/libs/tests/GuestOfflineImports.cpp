@@ -12,6 +12,14 @@ extern "C" {
 int APS5_VABI sceHttpSetCookieEnabled(int, int);
 int APS5_VABI sceHttpSendRequest(int, const void*, std::size_t);
 int APS5_VABI sceHttp2WebSocketCreateRequest();
+int APS5_VABI sceHttp2WebSocketSetPingInterval();
+int APS5_VABI sceHttp2WebSocketSetPingTimeout();
+int APS5_VABI sceHttp2WebSocketSendTextMessage();
+int APS5_VABI sceHttp2WebSocketSendTextMessageAsync();
+int APS5_VABI sceHttp2WebSocketSendDataMessage();
+int APS5_VABI sceHttp2WebSocketSendDataMessageAsync();
+int APS5_VABI sceHttp2WebSocketClose();
+int APS5_VABI sceHttp2WebSocketCloseAsync();
 int APS5_VABI sceNpEntitlementAccessGetEntitlementKey(
     std::uint32_t, const NpUnifiedEntitlementLabel*, NpEntitlementAccessEntitlementKey*);
 int APS5_VABI sceRudpInit_nid_postfix(void*, int);
@@ -28,6 +36,14 @@ int main() {
     Require(sceHttpSendRequest(1, nullptr, 0) == network);
     // No WebSocket session is fabricated on the offline HTTP/2 backend.
     Require(sceHttp2WebSocketCreateRequest() == network);
+    Require(sceHttp2WebSocketSetPingInterval() == network);
+    Require(sceHttp2WebSocketSetPingTimeout() == network);
+    Require(sceHttp2WebSocketSendTextMessage() == network);
+    Require(sceHttp2WebSocketSendTextMessageAsync() == network);
+    Require(sceHttp2WebSocketSendDataMessage() == network);
+    Require(sceHttp2WebSocketSendDataMessageAsync() == network);
+    Require(sceHttp2WebSocketClose() == network);
+    Require(sceHttp2WebSocketCloseAsync() == network);
     bool cookieUnsupported = false;
     try {
         sceHttpSetCookieEnabled(1, 1);
