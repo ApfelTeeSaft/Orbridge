@@ -15,7 +15,10 @@
 
 PadInput::PadInput()
     : bindings(Pad::LoadInputMapping()), pressed(bindings.size()), wheelReleaseTimes(bindings.size()) {
-    openFirstAvailableController();
+    const char* disableController = std::getenv("APS5_DISABLE_GAMECONTROLLER");
+    const bool controllerDisabled = disableController != nullptr && disableController[0] != '\0' &&
+        !(disableController[0] == '0' && disableController[1] == '\0');
+    if (!controllerDisabled) openFirstAvailableController();
 }
 
 PadInput::~PadInput() {
@@ -23,6 +26,11 @@ PadInput::~PadInput() {
 }
 
 void PadInput::openFirstAvailableController() {
+    // Avoid reinitializing the DirectInput backend following controller
+    // hotplug events when APS5_DISABLE_GAMECONTROLLER is enabled.
+    const char* disableController = std::getenv("APS5_DISABLE_GAMECONTROLLER");
+    if (disableController != nullptr && disableController[0] != '\0' &&
+        !(disableController[0] == '0' && disableController[1] == '\0')) return;
     if (controller != nullptr) return;
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
