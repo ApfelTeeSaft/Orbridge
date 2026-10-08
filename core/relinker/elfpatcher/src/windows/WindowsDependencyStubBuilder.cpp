@@ -637,6 +637,30 @@ WindowsDependencyStub WindowsDependencyStubBuilder::Build(WindowsStubEmitter& co
     a.AddValue(Dx, 1);
     a.Value(Ax, 0);
     a.StoreByte(Dx, Ax);
+    // LoadLibraryExA returned ERROR_MOD_NOT_FOUND. Distinguish a missing
+    // root PRX from a present PRX whose nested dependencies cannot resolve.
+    // Trying to map a missing root as a datafile only produces a misleading
+    // generic "Windows API failed" diagnostic.
+    a.Mov(Cx, Bx);
+    a.Api("GetFileAttributesA");
+    a.Value(Dx, 0xffffffffu);
+    a.Compare(Ax, Dx);
+    a.Jump("diagnoseRootPresent", 0x85);
+    a.Text("missingModule");
+    a.Mov(Cx, Bx);
+    a.Call("write");
+    a.Text("moduleImporter");
+    a.Mov(Cx, Si);
+    a.Call("write");
+    a.Text("chain");
+    a.Mov(Cx, Si);
+    a.Call("write");
+    a.Text("arrow");
+    a.Mov(Cx, Bx);
+    a.Call("write");
+    a.Text("newline");
+    a.Jump("terminate");
+    a.Mark("diagnoseRootPresent");
     a.Value(Cx, 0);
     a.Value(Dx, NodeSize * NodeLimit);
     a.Value(R8, 0x3000);
