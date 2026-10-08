@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <set>
+#include <sstream>
 
 namespace Relinker {
 
@@ -122,7 +123,22 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         }
         for (const auto& header : codeHeaders) {
             const std::vector<std::uint8_t> code(image.Bytes.begin() + header.Offset, image.Bytes.begin() + header.Offset + header.FileSize);
-            syscallScanner.ScanCodeSectionForSyscalls(code, header.MappedAddress, header.FileSize);
+            try {
+                syscallScanner.ScanCodeSectionForSyscalls(code, header.MappedAddress, header.FileSize);
+            } catch (const Domain::RelinkerException& error) {
+                // The scanner reports guest virtual addresses, not offsets into eboot.bin.
+                // Preserve the original address while identifying the guest PRX and its file offset.
+                std::ostringstream message;
+                message << error.what() << " in guest module " << path.string();
+                if (error.FailureOffset >= header.MappedAddress &&
+                    error.FailureOffset - header.MappedAddress < header.FileSize) {
+                    const auto fileOffset = header.Offset + (error.FailureOffset - header.MappedAddress);
+                    message << " (guest file offset 0x" << std::hex << fileOffset << ")";
+                }
+                Domain::RelinkerException failure(message.str(), error.FailureOffset);
+                failure.InputPath = path.string();
+                throw failure;
+            }
         }
         images.push_back(std::move(image));
     }
