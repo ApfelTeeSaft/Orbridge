@@ -1,5 +1,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "SceTypes.hpp"
+#include "prx/libkernel/Equeue/Equeue.hpp"
+#include "prx/libkernel/KernelErrors.hpp"
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -23,6 +25,12 @@ std::int64_t APS5_VABI sceNetRecv(int, void*, std::size_t, int);
 std::int64_t APS5_VABI sceNetSendto(int, const void*, std::size_t, int, const void*, std::uint32_t);
 std::int64_t APS5_VABI sceNetRecvfrom(int, void*, std::size_t, int, void*, std::uint32_t*);
 int APS5_VABI sceNetSocketClose(int);
+int APS5_VABI sceKernelCreateEqueue(KernelEqueue* eq, const char* name);
+int APS5_VABI sceKernelDeleteEqueue(KernelEqueue eq);
+int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t lowWater, void* userData);
+int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd);
+int APS5_VABI sceKernelWaitEqueue(KernelEqueue eq, KernelEvent* events, int num, int* count,
+                                  const KernelUseconds* timeout);
 int APS5_VABI sceNetSetsockopt(int, int, int, const void*, std::uint32_t);
 int* APS5_VABI sceNetErrnoLoc(void);
 int APS5_VABI sceNetEpollCreate(const char*, int);
@@ -278,7 +286,26 @@ int main() {
     const std::int64_t poll_now[2]{0, 0};
     Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, poll_now) == 0);
     Require(readable[udp_receiver / 64] == 0);
+
+    // Verify the equeue API against the real libSceNet -> WSAPoll/poll bridge,
+    // not only the synthetic socket-poller regression test.
+    KernelEqueue readQueue = 0;
+    Require(sceKernelCreateEqueue(&readQueue, "sce-net-read") == 0);
+    Require(sceKernelAddReadEvent(readQueue, udp_receiver, 1, nullptr) == 0);
+    KernelEvent readEvent{};
+    int readCount = -1;
+    const KernelUseconds noWait = 0;
+    Require(sceKernelWaitEqueue(readQueue, &readEvent, 1, &readCount, &noWait)
+            == SCE_KERNEL_ERROR_ETIMEDOUT && readCount == 0);
+
     Require(sceNetSendto(udp_sender, datagram, sizeof(datagram), 0, address.data(), address.size()) == sizeof(datagram));
+    const KernelUseconds waitForSocket = 500'000;
+    Require(sceKernelWaitEqueue(readQueue, &readEvent, 1, &readCount, &waitForSocket) == 0);
+    Require(readCount == 1 && readEvent.filter == EVFILT_READ &&
+            readEvent.ident == static_cast<std::uint64_t>(udp_receiver));
+    Require(sceKernelDeleteReadEvent(readQueue, udp_receiver) == 0);
+    Require(sceKernelDeleteEqueue(readQueue) == 0);
+
     readable[udp_receiver / 64] |= std::uint64_t{1} << (udp_receiver % 64);
     const std::int64_t wait_second[2]{1, 0};
     Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, wait_second) == 1);
