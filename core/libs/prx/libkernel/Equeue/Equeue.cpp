@@ -390,6 +390,12 @@ int APS5_VABI sceKernelDeleteUserEvent(KernelEqueue eq, int id) {
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_USER);
 }
 
+int APS5_VABI sceKernelDeleteReadEvent(KernelEqueue eq, int fd) {
+    // The read and write filters are separate registrations on the same
+    // descriptor. Only remove EVFILT_READ, preserving other queue entries.
+    return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_READ);
+}
+
 int APS5_VABI sceKernelAddHRTimerEvent(KernelEqueue eq, int id, const KernelTimespec* ts, void* udata) {
     if (ts == nullptr) {
         return SCE_KERNEL_ERROR_EFAULT;
