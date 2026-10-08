@@ -245,9 +245,17 @@ VideoOutDriver& VideoOutDriver::Get() {
 
 VideoOutDriver::VideoOutDriver() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
-        throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
+    // Opt-in crash isolation: prevent SDL from initializing the controller
+    // backend (including Windows DirectInput) while retaining video, keyboard,
+    // and mouse handling. Do not disable input in normal runs.
+    const char* disableController = std::getenv("APS5_DISABLE_GAMECONTROLLER");
+    const bool controllerDisabled = disableController != nullptr && disableController[0] != '\0' &&
+        !(disableController[0] == '0' && disableController[1] == '\0');
+    const Uint32 initFlags = SDL_INIT_VIDEO | (controllerDisabled ? 0u : SDL_INIT_GAMECONTROLLER);
+    if (SDL_InitSubSystem(initFlags) < 0) {
+        throw std::runtime_error(std::string("SDL_InitSubSystem failed: ") + SDL_GetError());
     }
+    if (controllerDisabled) VideoOutTrace("controller_backend_disabled flag=APS5_DISABLE_GAMECONTROLLER");
     try {
         AgcDriverWaitIdle_nid_postfix();
         presentThread = std::jthread([this](std::stop_token token) { presentLoop(token); });
