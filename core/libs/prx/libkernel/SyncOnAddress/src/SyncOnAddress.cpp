@@ -6,6 +6,10 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -111,6 +115,18 @@ int APS5_VABI sceKernelSyncOnAddressWake(void* address, std::int32_t count) {
     if (!IsAlignedAddress<std::uint8_t>(key) || count < 0) {
         APS5_INVALID_ARG_EX;
     }
+
+#if defined(_WIN32)
+    // Guest libc's _umtx_op WAIT translation sleeps with Win32 WaitOnAddress,
+    // while the native libkernel waiters use g_waiters. Wake both queues for
+    // the same address so the two implementations can synchronize.
+    if (count > 64) {
+        ::WakeByAddressAll(address);
+    } else {
+        for (int index = 0; index < count; ++index)
+            ::WakeByAddressSingle(address);
+    }
+#endif
 
     std::lock_guard<std::mutex> lock(g_waitersLock);
     const auto entry = g_waiters.find(key);
