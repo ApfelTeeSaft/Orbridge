@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <exception>
 #include <thread>
+#include <cstdarg>
+#include <mutex>
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 
@@ -24,6 +27,40 @@
 #include "prx/libc/include/Shutdown.hpp"
 
 namespace {
+
+// Opt-in, low-overhead startup/presentation diagnostics. Disabled by default.
+// Use APS5_VIDEOOUT_TRACE=1 to print a bounded number of flip details and a
+// presenter heartbeat. Log messages never claim that a frame contains pixels.
+bool VideoOutTraceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_VIDEOOUT_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+void VideoOutTrace(const char* format, ...) {
+    if (!VideoOutTraceEnabled()) return;
+    static std::mutex logMutex;
+    static const auto origin = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - origin).count();
+    std::lock_guard lock(logMutex);
+    std::fprintf(stderr, "[videoout.trace +%lldms] ", static_cast<long long>(elapsed));
+    std::va_list args;
+    va_start(args, format);
+    std::vfprintf(stderr, format, args);
+    va_end(args);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+}
+
+bool TraceFlipDetails() {
+    if (!VideoOutTraceEnabled()) return false;
+    static std::atomic<unsigned long long> flipTraces{0};
+    const auto count = flipTraces.fetch_add(1, std::memory_order_relaxed);
+    return count < 32 || count % 120 == 0;
+}
 
 void require(bool condition, const char* reason) {
     if (!condition) throw std::runtime_error(std::string("VideoOut: ") + reason);
@@ -147,6 +184,7 @@ FlipRequest::~FlipRequest() {
 }
 
 void FlipRequest::GpuReady(const std::shared_ptr<AgcDriver::FrameTiming>& frameTiming) {
+    VideoOutTrace("gpu_ready index=%d argument=%lld", index, static_cast<long long>(flipArg));
     require(frameTiming != nullptr, "missing frame timing");
     timing = frameTiming;
     {
@@ -208,6 +246,7 @@ VideoOutDriver::VideoOutDriver() {
         AgcDriverWaitIdle_nid_postfix();
         presentThread = std::jthread([this](std::stop_token token) { presentLoop(token); });
         vblankThread = std::jthread([this](std::stop_token token) { vblankLoop(token); });
+        VideoOutTrace("threads_started presenter=1 vblank=1");
         LibcRegisterShutdown_nid_postfix([] { VideoOutDriver::Get().Shutdown(); });
     } catch (...) {
         if (vblankThread.joinable()) {
@@ -281,6 +320,7 @@ int VideoOutDriver::Open(int busType) {
     AgcDriverRegisterVideoOutput_nid_postfix(static_cast<uint32_t>(handle), output);
     contexts[handle] = std::move(cfg);
     outputs[handle] = std::move(output);
+    VideoOutTrace("open handle=%d bus=%d", handle, busType);
     return handle;
 }
 
@@ -336,6 +376,14 @@ bool VideoOutDriver::IsOpen(int handle) {
 }
 
 int VideoOutDriver::SubmitFlip(int handle, int index, int flipMode, int64_t flipArg) {
+    if (VideoOutTraceEnabled()) {
+        static std::atomic<unsigned long long> submissions{0};
+        const auto count = submissions.fetch_add(1, std::memory_order_relaxed);
+        if (count < 48 || count % 120 == 0)
+            VideoOutTrace("submit_flip #%llu handle=%d index=%d mode=%d argument=%lld pending=%llu",
+                count + 1, handle, index, flipMode, static_cast<long long>(flipArg),
+                static_cast<unsigned long long>(flipQueue->reservations.load()));
+    }
     if (LibcShutdownToken_nid_postfix().stop_requested()) throw ProcessShutdown{};
     // A title that does not pace on flipPendingNum can run ahead of the presenter now that the queue
     // worker no longer waits per flip; a full queue is the documented error, not a failure.
@@ -381,6 +429,9 @@ void VideoOutDriver::vblankEnd() {
 }
 
 void VideoOutDriver::processFlip(FlipRequest& req) {
+    const bool traceThisFlip = TraceFlipDetails();
+    if (traceThisFlip) VideoOutTrace("process_flip_begin index=%d argument=%lld",
+        req.index, static_cast<long long>(req.flipArg));
     AgcDriver::PerformanceContext timingContext(req.timing.get());
     AgcDriver::PerformanceTimer timing("VideoOut.Flip");
     {
@@ -421,6 +472,8 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         *height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
     }, req.width, req.height, req.timing};
     timing.Mark("window_prepare");
+    if (traceThisFlip) VideoOutTrace("presentation_begin index=%d argument=%lld size=%ux%u",
+        req.index, static_cast<long long>(req.flipArg), req.width, req.height);
     const auto gpuReady = [](void* context) {
         auto& request = *static_cast<FlipRequest*>(context);
         std::lock_guard lock(request.cfg->mutex);
@@ -436,7 +489,11 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         AgcDriverPresentClear_nid_postfix(target, req.index == VIDEO_OUT_BUFFER_INDEX_BLACK, gpuReady, &req);
     }
     timing.Mark("present");
+    if (traceThisFlip) VideoOutTrace("presentation_returned index=%d argument=%lld",
+        req.index, static_cast<long long>(req.flipArg));
     window.UpdateTitle();
+    if (traceThisFlip) VideoOutTrace("title_updated index=%d argument=%lld",
+        req.index, static_cast<long long>(req.flipArg));
     timing.Mark("window_title");
     std::lock_guard lock(req.cfg->mutex);
     timing.Mark("completion_mutex_wait");
@@ -461,6 +518,8 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
     req.terminal = true;
     req.cfg->vblankCond.notify_all();
     timing.Mark("notify_game");
+    if (traceThisFlip) VideoOutTrace("flip_complete index=%d argument=%lld pending=%d",
+        req.index, static_cast<long long>(req.flipArg), req.cfg->flipStatus.flipPendingNum);
 }
 
 void VideoOutDriver::presentLoop(std::stop_token token) {
@@ -469,6 +528,7 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
         PadInput padInput;
         MouseInput mouseInput;
         KeyboardInput keyboardInput;
+        auto lastHeartbeat = std::chrono::steady_clock::now();
         while (!token.stop_requested()) {
             {
                 std::unique_lock lock(flipQueue->mutex);
@@ -494,6 +554,15 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
                 }
             }
             padInput.Update();
+            if (VideoOutTraceEnabled()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - lastHeartbeat >= std::chrono::seconds(2)) {
+                    VideoOutTrace("presenter_alive queued=%zu pending=%llu",
+                        [&] { std::lock_guard lock(flipQueue->mutex); return flipQueue->requests.size(); }(),
+                        static_cast<unsigned long long>(flipQueue->reservations.load()));
+                    lastHeartbeat = now;
+                }
+            }
             if (current) {
                 require(current->timing != nullptr, "missing presentation timing");
                 const auto dequeued = AgcDriver::FrameTiming::Clock::now();
@@ -549,6 +618,8 @@ void VideoOutDriver::vblankLoop(std::stop_token token) {
                 if (token.stop_requested() || flipQueue->failure) return;
             }
             vblankEnd();
+            if (VideoOutTraceEnabled() && frame % 120 == 0)
+                VideoOutTrace("vblank_alive frame=%lld", static_cast<long long>(frame));
         }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "[videoout] vblank failed: %s\n", error.what());
