@@ -4,6 +4,7 @@
 #include <io/FileReader.hpp>
 #include <io/BufferUtils.hpp>
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -120,6 +121,34 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
             auto converted = Codegen::MakeAmd64OnlyConverter()->Convert(std::move(image.Bytes), codeHeaders);
             image.Trampolines = std::move(converted.Trampolines);
             image.Bytes = std::move(converted.Bytes);
+        }
+        if (windows) {
+            // libc's private _umtx_op(454, UMTX_OP_WAIT=2) wrapper. This exact
+            // sequence sets the syscall number, tags the address, and passes
+            // a zero expected value with an optional relative timespec. Do not
+            // treat arbitrary syscall instructions as this operation.
+            constexpr std::array<std::uint8_t, 24> waitWrapper{
+                0x68, 0xc6, 0x01, 0x00, 0x00, 0x58,
+                0x48, 0x0f, 0xba, 0xef, 0x3f,
+                0x6a, 0x02, 0x5e, 0x49, 0x89, 0xca, 0x31, 0xd2,
+                0x0f, 0x05, 0x4d, 0x85, 0xd2
+            };
+            constexpr std::size_t syscallInWrapper = 19;
+            for (const auto& header : codeHeaders) {
+                if (header.FileSize < waitWrapper.size()) continue;
+                const auto begin = image.Bytes.begin() + static_cast<std::ptrdiff_t>(header.Offset);
+                const auto end = begin + static_cast<std::ptrdiff_t>(header.FileSize);
+                for (auto current = begin; current != end;) {
+                    const auto found = std::search(current, end, waitWrapper.begin(), waitWrapper.end());
+                    if (found == end) break;
+                    const auto position = static_cast<std::size_t>(found - begin) + syscallInWrapper;
+                    image.WindowsUmtxWaitSites.push_back(header.MappedAddress + position);
+                    // The PE writer inserts a real trampoline here. NOPs prevent
+                    // the unmodified syscall scanner from accepting raw syscalls.
+                    std::fill_n(begin + static_cast<std::ptrdiff_t>(position), 5, 0x90);
+                    current = found + static_cast<std::ptrdiff_t>(waitWrapper.size());
+                }
+            }
         }
         for (const auto& header : codeHeaders) {
             const std::vector<std::uint8_t> code(image.Bytes.begin() + header.Offset, image.Bytes.begin() + header.Offset + header.FileSize);
