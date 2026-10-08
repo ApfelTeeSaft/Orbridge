@@ -51,6 +51,10 @@ void KernelSetSocketPoller_nid_no_patch(KernelSocketPoll::Poller poller) {
     g_socketPoller.store(poller);
 }
 
+KernelSocketPoll::Poller KernelGetSocketPoller_nid_no_patch() {
+    return g_socketPoller.load();
+}
+
 int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* exceptfds, const void* timeout) {
     const auto* limit = static_cast<const GuestTimeval*>(timeout);
     if (nfds < 0 || nfds > SelectDescriptorLimit || (limit != nullptr && (limit->seconds < 0 || limit->microseconds < 0 || limit->microseconds >= 1000000))) {
