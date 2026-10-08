@@ -391,7 +391,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     if (dependencyDiagnostics) {
         code.Rip({0x83, 0x3d}, unresolvedCount); // cmp dword ptr [rip + count], 0
         code.Emit({0});
-        const allResolved = code.Branch({0x0f, 0x84});
+        const auto allResolved = code.Branch({0x0f, 0x84});
         writeString(searched, true);
         for (const auto resolvedPath : resolvedPaths) {
             writeString(indent, true);
