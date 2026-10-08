@@ -111,7 +111,7 @@ def executable_with_two_missing_imports():
     # Two independent relocations in the synthetic ELF main executable.
     # The native provider exports neither alpha nor beta.
     image = executable('a.prx', 'alpha#A#B')
-    strings = b'\\0alpha#A#B\\0a.prx\\0beta#A#B\\0'
+    strings = b'\0alpha#A#B\0a.prx\0beta#A#B\0'
     image[0x4800:0x4800 + len(strings)] = strings
     struct.pack_into('<IIIII', image, 0x4840, 1, 3, 1, 0, 0)
     struct.pack_into('<IBBHQQ', image, 0x48b0, strings.index(b'beta#A#B'),
