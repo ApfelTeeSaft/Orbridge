@@ -16,7 +16,7 @@ struct WindowsImports {
 
 class WindowsImportBuilder {
 public:
-    WindowsImports Build(std::uint32_t sectionRva) const;
+    WindowsImports Build(std::uint32_t sectionRva, bool includeAddressWait = false) const;
     std::vector<std::string> ReadLibraries(const Domain::SysVDynamicSection& dynamicSection) const;
 };
 
