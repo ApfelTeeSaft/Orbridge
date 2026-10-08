@@ -42,6 +42,14 @@ int APS5_VABI sceHttp2AddRequestHeader(int id, const char* name, const char* val
     return 0;
 }
 
+// NID -0wUiGX74GQ. The precise PS5 WebSocket creation parameter
+// signature is not established here, so do not inspect guest arguments
+// or create a dummy handle. Orbridge's HTTP/2 backend is offline:
+// report a network error just as sceHttp2SendRequest does.
+int APS5_VABI sceHttp2WebSocketCreateRequest() {
+    return ERROR_NETWORK;
+}
+
 int APS5_VABI sceHttp2CreateRequestWithURL(int tmpl_id, const char* method, const char* url, uint64_t content_length) {
     (void)tmpl_id;
     (void)method;
