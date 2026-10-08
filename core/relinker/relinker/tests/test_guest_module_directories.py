@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 
-from test_guest_intel_trampolines import PLAIN_SITE, elf_loads, guest_fixture, main_fixture
+from test_guest_intel_trampolines import PLAIN_SITE, elf_loads, guest_fixture, main_fixture, pe_sections, pe_bytes_at
 
 
 def module_with_symbol(exported):
@@ -114,6 +114,31 @@ def main():
                 guest_fixture(bytes.fromhex("48 8b 05 0f 05 00 00 c3")))
             result, output = convert(case, windows)
             assert result.returncode == 0 and output.exists(), (result.stdout, result.stderr)
+
+            if windows:
+                case = work / "windows-umtx-wait"
+                module_dir = case / "sce_module"
+                module_dir.mkdir(parents=True)
+                guest = guest_fixture(PLAIN_SITE)
+                # Real libc.prx 0x116c71 wrapper; only the syscall and
+                # following test are rewritten, preserving the remaining code.
+                wrapper = bytes.fromhex(
+                    "68 c6 01 00 00 58 48 0f ba ef 3f"
+                    "6a 02 5e 49 89 ca 31 d2 0f 05 4d 85 d2")
+                assert len(wrapper) == 24
+                guest[0x430:0x430 + len(wrapper)] = wrapper
+                (module_dir / "libc.prx").write_bytes(guest)
+                result, output = convert(case, windows)
+                assert result.returncode == 0 and output.exists(), (result.stdout, result.stderr)
+                guest_output = case / "app0" / "sce_module" / "libc.prx.guest.prx"
+                pe = guest_output.read_bytes()
+                sections = pe_sections(pe)
+                code = next(section for section in sections if section[0] == b".elf0")
+                site_rva = code[1] + 0x30 + 19
+                assert pe_bytes_at(pe, sections, site_rva, 1) == b"\\xe9"
+                assert any(section[0] == b".umtx" for section in sections), sections
+                assert b"WaitOnAddress\\x00" in pe
+                assert b"\\x0f\\x05" not in pe_bytes_at(pe, sections, site_rva, 5)
 
             case = work / f"{windows}-exclude"
             for name in ("sce_module", "prx"):
