@@ -50,6 +50,46 @@ int APS5_VABI sceHttp2WebSocketCreateRequest() {
     return ERROR_NETWORK;
 }
 
+// PS5 WebSocket exports (NIDs identified in public PS5 symbol catalogs).
+// The current HTTP/2 backend does not create or manage live sockets.
+// Report a network failure for every WebSocket operation rather than
+// returning success, issuing fake connection handles, or accessing guest
+// output buffers based on unverified parameter signatures.
+//
+// When a WebSocket backend is implemented, replace these with validated
+// signatures and real request/connection state handling.
+int APS5_VABI sceHttp2WebSocketSetPingInterval() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketSetPingTimeout() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketSendTextMessage() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketSendTextMessageAsync() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketSendDataMessage() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketSendDataMessageAsync() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketClose() {
+    return ERROR_NETWORK;
+}
+
+int APS5_VABI sceHttp2WebSocketCloseAsync() {
+    return ERROR_NETWORK;
+}
+
 int APS5_VABI sceHttp2CreateRequestWithURL(int tmpl_id, const char* method, const char* url, uint64_t content_length) {
     (void)tmpl_id;
     (void)method;
