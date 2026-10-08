@@ -190,6 +190,12 @@ int main() {
         const auto leaf = directory / "diagnostic-leaf.dll";
         const auto runner = directory / "diagnostic-runner.exe";
         createRunner(runner, root);
+        Fs::remove(root);
+        expectDiagnostic(runner, {
+            "dependency module not found: " + root.string(),
+            "Importer: " + runner.string(),
+            "Chain: " + runner.string() + " -> " + root.string()
+        });
         createImage(root, {{middle.filename().string(), "Middle"}}, {});
         createImage(middle, {{leaf.filename().string(), "Missing"}}, "Middle");
         createImage(leaf, {}, "Present");
