@@ -143,6 +143,9 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
                     if (found == end) break;
                     const auto position = static_cast<std::size_t>(found - begin) + syscallInWrapper;
                     image.WindowsUmtxWaitSites.push_back(header.MappedAddress + position);
+                    std::cout << "Windows syscall lowering: _umtx_op(454) WAIT in "
+                              << path.string() << " at guest address 0x" << std::hex
+                              << (header.MappedAddress + position) << std::dec << '\n';
                     // The PE writer inserts a real trampoline here. NOPs prevent
                     // the unmodified syscall scanner from accepting raw syscalls.
                     std::fill_n(begin + static_cast<std::ptrdiff_t>(position), 5, 0x90);
