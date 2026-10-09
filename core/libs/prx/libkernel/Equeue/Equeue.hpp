@@ -72,6 +72,8 @@ public:
     static uint64_t MonotonicNs();
 
 private:
+    // Diagnostic only: called with m_mutex held.
+    void TraceState(const char* phase, uint64_t elapsedNs) const;
     void TriggerExpiredTimers(uint64_t nowNs);
     void RefreshSocketEvents();
     bool HasSocketEvents() const;
