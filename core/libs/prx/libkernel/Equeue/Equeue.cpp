@@ -352,6 +352,7 @@ int KernelEqueuePrivate::DeleteEvent(uintptr_t ident, int16_t filter) {
         it->filter.deleteEventFunc(m_handle, &*it);
     }
     m_events.erase(it);
+    if (EqueueTraceEnabled()) TraceState("event-deleted", 0);
     return EQUEUE_OK;
 }
 
