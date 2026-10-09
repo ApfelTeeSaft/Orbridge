@@ -365,43 +365,56 @@ std::size_t CaptureFrames(const CONTEXT* context, std::uint64_t* frames, std::si
     return count;
 }
 
-void ReportThreadContext(const CONTEXT* context, DWORD threadId, const char* name, const std::uint64_t* frames, std::size_t frameCount) {
+// Stack pointers are copied while the inspected thread is suspended.
+// Reading them only after ResumeThread could show a different stack.
+struct StackCodeCandidate {
+    std::uint64_t offset = 0;
+    std::uint64_t address = 0;
+};
+
+bool WantHangStackCandidates(const char* name) {
+    if (!name) return false;
+    if (std::strcmp(name, "MINECRAFT MAIN THREAD") == 0) return true;
+    const char* selected = std::getenv("APS5_HANG_STACK_THREAD");
+    return selected && *selected && std::strcmp(name, selected) == 0;
+}
+
+std::size_t CaptureStackCodeCandidates(const CONTEXT* context, StackCodeCandidate* output,
+                                       std::size_t capacity) {
+    constexpr std::uint64_t scanBytes = 0x8000;
+    std::size_t found = 0;
+    const std::uint64_t start = (context->Rsp + 7ull) & ~7ull;
+    for (std::uint64_t offset = 0; offset < scanBytes && found < capacity; offset += 8) {
+        const std::uint64_t slot = start + offset;
+        if (slot < start || !IsReadable(slot) || !IsReadable(slot + 7)) break;
+        const auto value = *reinterpret_cast<const std::uint64_t*>(slot);
+        if (value < 0x10000 || !IsExecutable(value)) continue;
+        output[found++] = {slot - context->Rsp, value};
+    }
+    return found;
+}
+
+void ReportThreadContext(const CONTEXT* context, DWORD threadId, const char* name,
+                         const std::uint64_t* frames, std::size_t frameCount,
+                         const StackCodeCandidate* candidates, std::size_t candidateCount) {
     char line[MAX_PATH + 64];
     Report("  thread %lu '%s': rip ", static_cast<unsigned long>(threadId), name ? name : "");
     DescribeAddress(context->Rip, line, sizeof(line));
-    Report("%s rsp 0x%016llx rbp 0x%016llx\n", line, static_cast<unsigned long long>(context->Rsp), static_cast<unsigned long long>(context->Rbp));
+    Report("%s rsp 0x%016llx rbp 0x%016llx\\n", line, static_cast<unsigned long long>(context->Rsp), static_cast<unsigned long long>(context->Rbp));
     for (std::size_t depth = 0; depth < frameCount; ++depth) {
         DescribeAddress(frames[depth], line, sizeof(line));
-        Report("    #%llu %s\n", static_cast<unsigned long long>(depth), line);
+        Report("    #%llu %s\\n", static_cast<unsigned long long>(depth), line);
     }
-    // Many optimized x64 guest/native frames omit RBP chains, so the basic
-    // unwinder can stop after one frame. On a timed hang dump only, scan the
-    // top of the suspended Minecraft main thread's stack for executable
-    // pointers. These are *candidates*, not verified return addresses.
-    // Other threads are not scanned to keep diagnostic output bounded.
-    if (name && std::strcmp(name, "MINECRAFT MAIN THREAD") == 0) {
-        Report("    registers: rcx=0x%016llx rdx=0x%016llx r8=0x%016llx r9=0x%016llx\n",
-            static_cast<unsigned long long>(context->Rcx),
-            static_cast<unsigned long long>(context->Rdx),
-            static_cast<unsigned long long>(context->R8),
-            static_cast<unsigned long long>(context->R9));
-        Report("    main-thread stack code candidates (not an unwind trace):\n");
-        constexpr std::uint64_t scanBytes = 0x8000;
-        constexpr std::size_t maxCandidates = 32;
-        std::size_t found = 0;
-        const std::uint64_t start = (context->Rsp + 7ull) & ~7ull;
-        for (std::uint64_t offset = 0; offset < scanBytes && found < maxCandidates; offset += 8) {
-            const std::uint64_t slot = start + offset;
-            if (slot < start || !IsReadable(slot) || !IsReadable(slot + 7)) break;
-            const auto value = *reinterpret_cast<const std::uint64_t*>(slot);
-            if (value < 0x10000 || !IsExecutable(value)) continue;
-            DescribeAddress(value, line, sizeof(line));
-            Report("      [rsp+0x%llx] %s\n",
-                static_cast<unsigned long long>(slot - context->Rsp), line);
-            ++found;
-        }
-        if (!found) Report("      (no executable addresses found in first 32 KiB)\n");
+    if (!WantHangStackCandidates(name)) return;
+    Report("    registers: rcx=0x%016llx rdx=0x%016llx r8=0x%016llx r9=0x%016llx\\n",
+        static_cast<unsigned long long>(context->Rcx), static_cast<unsigned long long>(context->Rdx),
+        static_cast<unsigned long long>(context->R8), static_cast<unsigned long long>(context->R9));
+    Report("    thread stack code candidates (not an unwind trace):\\n");
+    for (std::size_t i = 0; i < candidateCount; ++i) {
+        DescribeAddress(candidates[i].address, line, sizeof(line));
+        Report("      [rsp+0x%llx] %s\\n", static_cast<unsigned long long>(candidates[i].offset), line);
     }
+    if (!candidateCount) Report("      (no executable addresses found in first 32 KiB)\\n");
 }
 
 void ReportAllThreads() {
