@@ -189,7 +189,29 @@ int APS5_VABI scePthreadMutexDestroy(PthreadMutex* mutex) {
 }
 
 int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
-    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false, __builtin_return_address(0));
+    auto* resolved = resolveMutex(mutex, true);
+    const void* caller = __builtin_return_address(0);
+    if (!traceMutexEnabled())
+        return acquireMutex(resolved, [](auto& native) { native.lock(); return true; }, 0, false, caller);
+    return acquireMutex(resolved, [&](auto& native) {
+        using Clock = std::chrono::steady_clock;
+        const auto started = Clock::now();
+        auto lastReport = started;
+        for (;;) {
+            if (native.try_lock_for(std::chrono::milliseconds(250))) {
+                const auto elapsed = Clock::now() - started;
+                if (elapsed >= std::chrono::seconds(2))
+                    logMutexContention(resolved, caller, elapsed, true);
+                return true;
+            }
+            const auto now = Clock::now();
+            if (now - started >= std::chrono::seconds(2) &&
+                now - lastReport >= std::chrono::seconds(2)) {
+                logMutexContention(resolved, caller, now - started, false);
+                lastReport = now;
+            }
+        }
+    }, 0, false, caller);
 }
 
 int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
