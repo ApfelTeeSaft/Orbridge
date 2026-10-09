@@ -51,7 +51,7 @@ PthreadMutex resolveMutex(PthreadMutex* mutex, bool initialize) {
 }
 
 template<typename TAcquire>
-int acquireMutex(PthreadMutex mutex, TAcquire acquire, int unavailable, bool tryOnly) {
+int acquireMutex(PthreadMutex mutex, TAcquire acquire, int unavailable, bool tryOnly, const void* caller) {
     const auto thread = std::this_thread::get_id();
     const bool owned = mutex->_owner.load(std::memory_order_acquire) == thread;
     if (owned && mutex->_type != MutexType::Recursive) {
@@ -71,6 +71,7 @@ int acquireMutex(PthreadMutex mutex, TAcquire acquire, int unavailable, bool try
         if (!acquire(mutex->_mtx))
             return unavailable;
     }
+    mutex->_ownerCaller.store(reinterpret_cast<std::uintptr_t>(caller), std::memory_order_release);
     mutex->_owner.store(thread, std::memory_order_release);
     return 0;
 }
@@ -87,7 +88,7 @@ int MutexOperations::Timedlock(PthreadMutex* mutex, const KernelTimespec* abstim
     if (std::chrono::duration<long double>(duration) >= std::chrono::duration<long double>(std::chrono::system_clock::duration::max()))
         throw std::overflow_error("Absolute mutex timeout exceeds the host clock range");
     const auto deadline = std::chrono::system_clock::time_point(std::chrono::duration_cast<std::chrono::system_clock::duration>(duration));
-    return acquireMutex(resolveMutex(mutex, true), [&](auto& native) { return native.try_lock_until(deadline); }, sceTimedOut, false);
+    return acquireMutex(resolveMutex(mutex, true), [&](auto& native) { return native.try_lock_until(deadline); }, sceTimedOut, false, __builtin_return_address(0));
 }
 
 extern "C" {
@@ -161,7 +162,7 @@ int APS5_VABI scePthreadMutexDestroy(PthreadMutex* mutex) {
 }
 
 int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
-    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
+    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false, __builtin_return_address(0));
 }
 
 int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
@@ -187,7 +188,7 @@ int APS5_VABI scePthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec)
 }
 
 int APS5_VABI scePthreadMutexTrylock(PthreadMutex* mutex) {
-    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { return native.try_lock(); }, sceBusy, true);
+    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { return native.try_lock(); }, sceBusy, true, __builtin_return_address(0));
 }
 
 }
