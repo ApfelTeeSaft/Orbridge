@@ -11,6 +11,9 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -61,10 +64,17 @@ int waitUntil(PthreadCond* cond, PthreadMutex* mutex, std::optional<std::uint64_
         const auto previousCount = m->_count;
         m->_count = 0;
         m->_ownerCaller.store(0, std::memory_order_release);
+        m->_ownerNativeTid.store(0, std::memory_order_release);
+        m->_ownerSinceMs.store(0, std::memory_order_release);
         m->_owner.store(std::thread::id{}, std::memory_order_release);
         if (deadlineNanos) timedOut = !c->_cv.WaitUntil(lock, *deadlineNanos);
         else c->_cv.Wait(lock);
         m->_ownerCaller.store(reinterpret_cast<std::uintptr_t>(caller), std::memory_order_release);
+        m->_ownerSinceMs.store(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()), std::memory_order_release);
+#ifdef _WIN32
+        m->_ownerNativeTid.store(static_cast<std::uint32_t>(GetCurrentThreadId()), std::memory_order_release);
+#endif
         m->_owner.store(std::this_thread::get_id(), std::memory_order_release);
         m->_count = previousCount;
         lock.release();
@@ -72,10 +82,17 @@ int waitUntil(PthreadCond* cond, PthreadMutex* mutex, std::optional<std::uint64_
     }
     std::unique_lock<std::timed_mutex> lock(m->_mtx, std::adopt_lock);
     m->_ownerCaller.store(0, std::memory_order_release);
+        m->_ownerNativeTid.store(0, std::memory_order_release);
+        m->_ownerSinceMs.store(0, std::memory_order_release);
     m->_owner.store(std::thread::id{}, std::memory_order_release);
     if (deadlineNanos) timedOut = !c->_cv.WaitUntil(lock, *deadlineNanos);
     else c->_cv.Wait(lock);
     m->_ownerCaller.store(reinterpret_cast<std::uintptr_t>(caller), std::memory_order_release);
+        m->_ownerSinceMs.store(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()), std::memory_order_release);
+#ifdef _WIN32
+        m->_ownerNativeTid.store(static_cast<std::uint32_t>(GetCurrentThreadId()), std::memory_order_release);
+#endif
     m->_owner.store(std::this_thread::get_id(), std::memory_order_release);
     lock.release();
     return timedOut ? sceTimedOut : 0;
