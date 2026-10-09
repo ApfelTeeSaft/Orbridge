@@ -169,6 +169,20 @@ void Driver::execute(const Submission& submission) {
 
         bool wroteOnGpu = false, endOfPipeInterrupt = false, interruptDeferred = false, drawPacket = false, sampleDump = false;
         const bool drains = preparePacketMemory(submission, queue, packet, header, opcode, wroteOnGpu, endOfPipeInterrupt, interruptDeferred, drawPacket, sampleDump);
+        if (endOfPipeInterrupt) {
+            static const bool traceEop = [] {
+                const char* v = std::getenv("APS5_TRACE_AGC_EOP");
+                return v && *v && !(v[0] == '0' && v[1] == '\0');
+            }();
+            if (traceEop) {
+                std::fprintf(stderr,
+                    "[agc.eop] packet serial=%llu queue=%u offset=%zu opcode=0x%x deferred=%d wrote_on_gpu=%d drained=%d\n",
+                    static_cast<unsigned long long>(submission.serial), submission.queue,
+                    cursor, opcode, interruptDeferred ? 1 : 0,
+                    wroteOnGpu ? 1 : 0, drains ? 1 : 0);
+                std::fflush(stderr);
+            }
+        }
         traceLabel(packet, submission.queue);
 
         const bool waitPacket = opcode == 0x3c || opcode == 0x93 || header == RenderingWaitPacketHeader;
