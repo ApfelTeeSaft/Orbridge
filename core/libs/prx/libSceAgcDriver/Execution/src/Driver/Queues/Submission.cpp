@@ -195,15 +195,15 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
     Submission submission{};
     submission.queue = queue;
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    static const bool traceStages = std::getenv("APS5_TRACE_GPU_STAGES") != nullptr;
     auto& costs = submissionCosts(queue);
-    const auto start = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto start = profile || traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (descriptor.dw_num != 0) {
         require(descriptor.dw_num <= std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t), "command size overflow");
         GuestMemory::CheckRange(descriptor.addr, static_cast<std::size_t>(descriptor.dw_num) * sizeof(std::uint32_t), alignof(std::uint32_t));
         copyCommands(submission, descriptor.addr, descriptor.dw_num);
     }
     const auto copied = profile ? std::chrono::steady_clock::now() : start;
-    static const bool traceStages = std::getenv("APS5_TRACE_GPU_STAGES") != nullptr;
     const auto afterCopy = traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     validate(submission, descriptor.addr);
     const auto afterValidate = traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
