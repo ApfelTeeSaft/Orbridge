@@ -4,6 +4,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <atomic>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -27,6 +33,45 @@ uint64_t KernelEqueuePrivate::MonotonicNs() {
             std::chrono::steady_clock::now().time_since_epoch()
         ).count()
     );
+}
+
+static bool EqueueTraceEnabled() {
+    static const bool enabled = [] {
+        const char* setting = std::getenv("APS5_TRACE_EQUEUE");
+        return setting && setting[0] && !(setting[0] == '0' && setting[1] == 0);
+    }();
+    return enabled;
+}
+
+static unsigned long EqueueTraceTid() {
+#ifdef _WIN32
+    return static_cast<unsigned long>(GetCurrentThreadId());
+#else
+    return 0;
+#endif
+}
+
+void KernelEqueuePrivate::TraceState(const char* phase, uint64_t elapsedNs) const {
+    if (!EqueueTraceEnabled()) return;
+    std::fprintf(stderr,
+        "[equeue.trace] %s tid=%lu eq=%llu name='%s' elapsed_ms=%llu watched=%zu closed=%d\n",
+        phase, EqueueTraceTid(), static_cast<unsigned long long>(m_handle),
+        m_name.c_str(), static_cast<unsigned long long>(elapsedNs / 1000000ULL),
+        m_events.size(), m_closed ? 1 : 0);
+    unsigned count = 0;
+    for (const auto& entry : m_events) {
+        if (++count > 16) {
+            std::fprintf(stderr, "[equeue.trace]   ... additional watchers omitted\n");
+            break;
+        }
+        std::fprintf(stderr,
+            "[equeue.trace]   ident=%llu filter=%d flags=0x%x triggered=%d queued=%zu deadline=%llu\n",
+            static_cast<unsigned long long>(entry.event.ident),
+            static_cast<int>(entry.event.filter), static_cast<unsigned>(entry.event.flags),
+            entry.triggered ? 1 : 0, entry.pendingEvents.size(),
+            static_cast<unsigned long long>(entry.deadlineNs));
+    }
+    std::fflush(stderr);
 }
 
 void KernelEqueuePrivate::Close() {
