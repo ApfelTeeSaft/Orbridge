@@ -314,8 +314,10 @@ int KernelEqueuePrivate::TriggerEvent(uintptr_t ident, int16_t filter, void* tri
         }
     );
     if (it == m_events.end()) {
+        if (EqueueTraceEnabled()) TraceState("trigger-unregistered", 0);
         return SCE_KERNEL_ERROR_ENOENT;
     }
+    if (EqueueTraceEnabled()) TraceState("event-triggered", 0);
     if (it->filter.triggerFunc != nullptr) {
         it->filter.triggerFunc(&*it, triggerData);
     } else {
