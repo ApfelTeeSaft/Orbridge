@@ -8,6 +8,9 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 
 namespace {
 
@@ -16,6 +19,30 @@ constexpr int sceDeadlock = static_cast<int>(0x8002000bu);
 constexpr int sceBusy = static_cast<int>(0x80020010u);
 constexpr int sceTimedOut = static_cast<int>(0x8002003cu);
 std::mutex initializationMutex;
+
+bool traceMutexEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_TRACE_MUTEX");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    return enabled;
+}
+
+void logMutexContention(PthreadMutex mutex, const void* caller,
+                        std::chrono::steady_clock::duration elapsed, bool acquired) {
+    const auto owner = mutex->_owner.load(std::memory_order_acquire);
+    const auto ownerCaller = mutex->_ownerCaller.load(std::memory_order_acquire);
+    std::fprintf(stderr,
+        "[mutex.trace] %s mutex=%p type=%u waiter_hash=%zu owner_hash=%zu "
+        "owner_caller=%p caller=%p elapsed_ms=%lld\n",
+        acquired ? "acquired" : "blocked", static_cast<void*>(mutex),
+        static_cast<unsigned>(mutex->_type),
+        std::hash<std::thread::id>{}(std::this_thread::get_id()),
+        std::hash<std::thread::id>{}(owner),
+        reinterpret_cast<const void*>(ownerCaller), caller,
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+    std::fflush(stderr);
+}
 
 PthreadMutex destroyedMutex() {
     return reinterpret_cast<PthreadMutex>(std::uintptr_t{2});
