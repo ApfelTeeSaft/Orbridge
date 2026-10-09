@@ -1,6 +1,9 @@
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstddef>
 #include <mutex>
@@ -23,6 +26,17 @@ struct Registration {
 std::mutex g_mutex;
 std::vector<Registration> g_registrations;
 
+// Trace only the graphics end-of-pipe events which back filter -14.
+// Do not synthesize interrupts: this is purely diagnostic.
+bool TraceAgcEop() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_TRACE_AGC_EOP");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    return enabled;
+}
+std::atomic<std::uint64_t> g_deliveryCount{0};
+
 }
 
 void AgcDriverDeliverEopInterrupt(std::uint32_t queue) {
@@ -31,10 +45,22 @@ void AgcDriverDeliverEopInterrupt(std::uint32_t queue) {
         std::lock_guard lock(g_mutex);
         registrations = g_registrations;
     }
+    const auto serial = ++g_deliveryCount;
+    std::size_t matches = 0;
     for (const auto& registration : registrations) {
         if (registration.id == static_cast<int>(queue)) {
-            EqueueTriggerEvent_nid_postfix(registration.eq, static_cast<uintptr_t>(registration.id), EvfiltGraphicsCore, nullptr);
+            ++matches;
+            const int result = EqueueTriggerEvent_nid_postfix(registration.eq, static_cast<uintptr_t>(registration.id), EvfiltGraphicsCore, nullptr);
+            if (TraceAgcEop() && (serial <= 64 || serial % 128 == 0 || result != EQUEUE_OK))
+                std::fprintf(stderr, "[agc.eop] deliver seq=%llu queue=%u eq=%llu result=0x%x\n",
+                    static_cast<unsigned long long>(serial), queue,
+                    static_cast<unsigned long long>(registration.eq), static_cast<unsigned>(result));
         }
+    }
+    if (TraceAgcEop() && (serial <= 64 || serial % 128 == 0 || matches == 0)) {
+        std::fprintf(stderr, "[agc.eop] delivery-summary seq=%llu queue=%u registered=%zu matching=%zu\n",
+            static_cast<unsigned long long>(serial), queue, registrations.size(), matches);
+        std::fflush(stderr);
     }
 }
 
@@ -64,6 +90,11 @@ int APS5_VABI sceAgcDriverAddEqEvent(KernelEqueue eq, int id, void* udata) {
     std::lock_guard lock(g_mutex);
     if (std::none_of(g_registrations.begin(), g_registrations.end(), [&](const Registration& r) { return r.eq == eq && r.id == id; })) {
         g_registrations.push_back({eq, id});
+    }
+    if (TraceAgcEop()) {
+        std::fprintf(stderr, "[agc.eop] register eq=%llu queue=%d registered=%zu\n",
+            static_cast<unsigned long long>(eq), id, g_registrations.size());
+        std::fflush(stderr);
     }
     return 0;
 }
