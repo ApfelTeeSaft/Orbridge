@@ -29,6 +29,9 @@ struct PthreadMutexPrivate {
     std::timed_mutex _mtx;
     MutexType _type;
     std::atomic<std::thread::id> _owner;
+    // Last caller that acquired the lock, for opt-in contention diagnostics.
+    // This is host-private state; the guest only sees an opaque mutex handle.
+    std::atomic<std::uintptr_t> _ownerCaller{0};
     int _count;
 
     PthreadMutexPrivate() : _type(MutexType::ErrorCheck), _owner(std::thread::id{}), _count(0) {}
