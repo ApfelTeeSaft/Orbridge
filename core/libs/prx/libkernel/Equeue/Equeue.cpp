@@ -298,6 +298,7 @@ int KernelEqueuePrivate::AddEvent(const KernelEqueueEvent& event) {
     } else {
         m_events.push_back(event);
     }
+    if (EqueueTraceEnabled()) TraceState("event-added", 0);
     m_cond.NotifyOne();
     return EQUEUE_OK;
 }
