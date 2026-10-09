@@ -11,6 +11,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -19,6 +25,19 @@ constexpr int sceDeadlock = static_cast<int>(0x8002000bu);
 constexpr int sceBusy = static_cast<int>(0x80020010u);
 constexpr int sceTimedOut = static_cast<int>(0x8002003cu);
 std::mutex initializationMutex;
+
+std::uint64_t mutexNowMs() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+std::uint32_t mutexNativeTid() {
+#ifdef _WIN32
+    return static_cast<std::uint32_t>(GetCurrentThreadId());
+#else
+    return 0;
+#endif
+}
 
 bool traceMutexEnabled() {
     static const bool enabled = [] {
@@ -32,14 +51,20 @@ void logMutexContention(PthreadMutex mutex, const void* caller,
                         std::chrono::steady_clock::duration elapsed, bool acquired) {
     const auto owner = mutex->_owner.load(std::memory_order_acquire);
     const auto ownerCaller = mutex->_ownerCaller.load(std::memory_order_acquire);
+    const auto ownerTid = mutex->_ownerNativeTid.load(std::memory_order_acquire);
+    const auto ownerSince = mutex->_ownerSinceMs.load(std::memory_order_acquire);
+    const auto now = mutexNowMs();
     std::fprintf(stderr,
-        "[mutex.trace] %s mutex=%p type=%u waiter_hash=%zu owner_hash=%zu "
-        "owner_caller=%p caller=%p elapsed_ms=%lld\n",
+        "[mutex.trace] %s mutex=%p type=%u waiter_tid=%u owner_tid=%u "
+        "waiter_hash=%zu owner_hash=%zu owner_caller=%p caller=%p "
+        "owner_held_ms=%llu elapsed_ms=%lld\n",
         acquired ? "acquired" : "blocked", static_cast<void*>(mutex),
-        static_cast<unsigned>(mutex->_type),
+        static_cast<unsigned>(mutex->_type), static_cast<unsigned>(mutexNativeTid()),
+        static_cast<unsigned>(ownerTid),
         std::hash<std::thread::id>{}(std::this_thread::get_id()),
         std::hash<std::thread::id>{}(owner),
         reinterpret_cast<const void*>(ownerCaller), caller,
+        static_cast<unsigned long long>(ownerSince && now >= ownerSince ? now - ownerSince : 0),
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
     std::fflush(stderr);
 }
@@ -99,6 +124,8 @@ int acquireMutex(PthreadMutex mutex, TAcquire acquire, int unavailable, bool try
             return unavailable;
     }
     mutex->_ownerCaller.store(reinterpret_cast<std::uintptr_t>(caller), std::memory_order_release);
+    mutex->_ownerSinceMs.store(mutexNowMs(), std::memory_order_release);
+    mutex->_ownerNativeTid.store(mutexNativeTid(), std::memory_order_release);
     mutex->_owner.store(thread, std::memory_order_release);
     return 0;
 }
@@ -222,11 +249,15 @@ int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
         if (--current->_count == 0) {
             current->_owner.store(std::thread::id{}, std::memory_order_release);
             current->_ownerCaller.store(0, std::memory_order_release);
+            current->_ownerNativeTid.store(0, std::memory_order_release);
+            current->_ownerSinceMs.store(0, std::memory_order_release);
         }
         current->_rmtx.unlock();
     } else {
         current->_owner.store(std::thread::id{}, std::memory_order_release);
         current->_ownerCaller.store(0, std::memory_order_release);
+        current->_ownerNativeTid.store(0, std::memory_order_release);
+        current->_ownerSinceMs.store(0, std::memory_order_release);
         current->_mtx.unlock();
     }
     return 0;
