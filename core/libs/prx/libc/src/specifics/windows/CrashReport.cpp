@@ -400,21 +400,21 @@ void ReportThreadContext(const CONTEXT* context, DWORD threadId, const char* nam
     char line[MAX_PATH + 64];
     Report("  thread %lu '%s': rip ", static_cast<unsigned long>(threadId), name ? name : "");
     DescribeAddress(context->Rip, line, sizeof(line));
-    Report("%s rsp 0x%016llx rbp 0x%016llx\\n", line, static_cast<unsigned long long>(context->Rsp), static_cast<unsigned long long>(context->Rbp));
+    Report("%s rsp 0x%016llx rbp 0x%016llx\n", line, static_cast<unsigned long long>(context->Rsp), static_cast<unsigned long long>(context->Rbp));
     for (std::size_t depth = 0; depth < frameCount; ++depth) {
         DescribeAddress(frames[depth], line, sizeof(line));
-        Report("    #%llu %s\\n", static_cast<unsigned long long>(depth), line);
+        Report("    #%llu %s\n", static_cast<unsigned long long>(depth), line);
     }
     if (!WantHangStackCandidates(name)) return;
-    Report("    registers: rcx=0x%016llx rdx=0x%016llx r8=0x%016llx r9=0x%016llx\\n",
+    Report("    registers: rcx=0x%016llx rdx=0x%016llx r8=0x%016llx r9=0x%016llx\n",
         static_cast<unsigned long long>(context->Rcx), static_cast<unsigned long long>(context->Rdx),
         static_cast<unsigned long long>(context->R8), static_cast<unsigned long long>(context->R9));
-    Report("    thread stack code candidates (not an unwind trace):\\n");
+    Report("    thread stack code candidates (not an unwind trace):\n");
     for (std::size_t i = 0; i < candidateCount; ++i) {
         DescribeAddress(candidates[i].address, line, sizeof(line));
-        Report("      [rsp+0x%llx] %s\\n", static_cast<unsigned long long>(candidates[i].offset), line);
+        Report("      [rsp+0x%llx] %s\n", static_cast<unsigned long long>(candidates[i].offset), line);
     }
-    if (!candidateCount) Report("      (no executable addresses found in first 32 KiB)\\n");
+    if (!candidateCount) Report("      (no executable addresses found in first 32 KiB)\n");
 }
 
 void ReportAllThreads() {
@@ -430,6 +430,8 @@ void ReportAllThreads() {
         CONTEXT context;
         std::uint64_t frames[12];
         std::size_t frameCount;
+        StackCodeCandidate candidates[48];
+        std::size_t candidateCount;
     };
     static CapturedThread captured[128];
     std::size_t capturedCount = 0;
@@ -452,27 +454,34 @@ void ReportAllThreads() {
             const BOOL haveContext = GetThreadContext(thread, &context);
             std::uint64_t frames[12] = {};
             const std::size_t frameCount = haveContext ? CaptureFrames(&context, frames, sizeof(frames) / sizeof(frames[0])) : 0;
-            ResumeThread(thread);
             char name[128] = "";
             PWSTR description = nullptr;
             if (SUCCEEDED(GetThreadDescription(thread, &description)) && description) {
                 WideCharToMultiByte(CP_UTF8, 0, description, -1, name, sizeof(name), nullptr, nullptr);
                 LocalFree(description);
             }
+            StackCodeCandidate candidates[48] = {};
+            const std::size_t candidateCount = haveContext && WantHangStackCandidates(name)
+                ? CaptureStackCodeCandidates(&context, candidates, sizeof(candidates) / sizeof(candidates[0]))
+                : 0;
+            ResumeThread(thread);
             CloseHandle(thread);
             if (!haveContext) continue;
             captured[capturedCount].id = entry.th32ThreadID;
-            std::memcpy(captured[capturedCount].name, name, sizeof(captured[capturedCount].name));
+            std::memcpy(captured[capturedCount].name, name, sizeof(name));
             captured[capturedCount].context = context;
-            std::memcpy(captured[capturedCount].frames, frames, sizeof(captured[capturedCount].frames));
+            std::memcpy(captured[capturedCount].frames, frames, sizeof(frames));
             captured[capturedCount].frameCount = frameCount;
+            std::memcpy(captured[capturedCount].candidates, candidates, sizeof(candidates));
+            captured[capturedCount].candidateCount = candidateCount;
             ++capturedCount;
         } while (Thread32Next(snapshot, &entry));
     }
     CloseHandle(snapshot);
     Report("  all threads:\n");
     for (std::size_t i = 0; i < capturedCount; ++i) {
-        ReportThreadContext(&captured[i].context, captured[i].id, captured[i].name, captured[i].frames, captured[i].frameCount);
+        ReportThreadContext(&captured[i].context, captured[i].id, captured[i].name, captured[i].frames, captured[i].frameCount,
+                            captured[i].candidates, captured[i].candidateCount);
     }
     if (skippedCount != 0) Report("  %llu further thread(s) left out\n", static_cast<unsigned long long>(skippedCount));
 }
