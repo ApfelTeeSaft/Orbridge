@@ -471,9 +471,42 @@ struct VulkanDevice::State {
     // Blocks on the fence, or polls it every 50 us with APS5_PRESENT_POLL_FENCE=1 (the difference
     // in the wait is the presenter's wake-up latency).
     void WaitPresentFence(VkFence fence) {
+        static const bool trace = [] {
+            const char* value = std::getenv("APS5_TRACE_PRESENT_FENCE");
+            return value && *value && !(value[0] == '0' && value[1] == '\0');
+        }();
         static const bool poll = std::getenv("APS5_PRESENT_POLL_FENCE") != nullptr;
+        const auto wait = DeviceFunction<PFN_vkWaitForFences>("vkWaitForFences");
+        if (trace) {
+            // Bound each host wait for diagnostics only. A timeout does not retire or
+            // signal the fence; retry exactly the same Vulkan wait condition.
+            const auto status = DeviceFunction<PFN_vkGetFenceStatus>("vkGetFenceStatus");
+            const auto start = std::chrono::steady_clock::now();
+            unsigned timeouts = 0;
+            for (;;) {
+                const VkResult result = wait(device, 1, &fence, VK_TRUE, 1000000000ULL);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+                if (result == VK_SUCCESS) {
+                    std::fprintf(stderr, "[present.fence] signaled waited_ms=%lld timeouts=%u\n",
+                        static_cast<long long>(elapsed), timeouts);
+                    std::fflush(stderr);
+                    return;
+                }
+                if (result != VK_TIMEOUT) check(result, "vkWaitForFences present");
+                ++timeouts;
+                if (timeouts == 1 || timeouts % 5 == 0) {
+                    const VkResult state = status(device, fence);
+                    std::fprintf(stderr,
+                        "[present.fence] still-waiting waited_ms=%lld timeouts=%u fence_status=%d\n",
+                        static_cast<long long>(elapsed), timeouts, static_cast<int>(state));
+                    std::fflush(stderr);
+                    if (state != VK_NOT_READY && state != VK_SUCCESS) check(state, "vkGetFenceStatus present");
+                }
+            }
+        }
         if (!poll) {
-            check(DeviceFunction<PFN_vkWaitForFences>("vkWaitForFences")(device, 1, &fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max()), "vkWaitForFences present");
+            check(wait(device, 1, &fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max()), "vkWaitForFences present");
             return;
         }
         const auto status = DeviceFunction<PFN_vkGetFenceStatus>("vkGetFenceStatus");
