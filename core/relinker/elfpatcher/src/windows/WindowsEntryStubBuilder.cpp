@@ -389,8 +389,12 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     }
 
     if (dependencyDiagnostics) {
-        code.Rip({0x83, 0x3d}, unresolvedCount); // cmp dword ptr [rip + count], 0
-        code.Emit({0});
+        // WindowsStubEmitter::Rip patches displacement relative to the end
+        // of its disp32 field. A CMP [RIP+disp32], imm8 has an additional
+        // immediate byte, which used to shift the read by one and made
+        // counts below 256 appear zero. Load first, then test the register.
+        code.Rip({0x8b, 0x05}, unresolvedCount); // mov eax, [rip + count]
+        code.Emit({0x85, 0xc0});                 // test eax, eax
         const auto allResolved = code.Branch({0x0f, 0x84});
         writeString(searched, true);
         for (const auto resolvedPath : resolvedPaths) {
