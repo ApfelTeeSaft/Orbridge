@@ -5,6 +5,8 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include <cstdlib>
+#include <chrono>
+#include <cstdio>
 
 namespace AgcDriver::DriverDetail {
 
@@ -27,6 +29,20 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
 
     PerformanceContext timingContext(window.timing.get());
     PerformanceTimer timing("Driver.Present");
+    static const bool tracePresent = [] {
+        const char* value = std::getenv("APS5_TRACE_PRESENT_STAGES");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    const auto traceStarted = std::chrono::steady_clock::now();
+    const auto traceStage = [&](const char* stage) {
+        if (!tracePresent) return;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - traceStarted).count();
+        std::fprintf(stderr, "[present.stage] elapsed_ms=%lld phase=%s buffer=%p\n",
+            static_cast<long long>(ms), stage, static_cast<const void*>(buffer));
+        std::fflush(stderr);
+    };
+    traceStage("enter");
     static thread_local bool pinned = false;
     if (!pinned) {
         pinned = true;
@@ -51,14 +67,18 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
             std::unique_lock replacing(deviceReplacement, std::defer_lock);
             if (const auto current = device.Load(); current == nullptr || current->Window() == nullptr) replacing.lock();
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
+            traceStage("device_gpu_mutex_enter");
             std::lock_guard lock(GuestMemory::GpuMutex());
+            traceStage("device_gpu_mutex_acquired");
             timing.Mark("gpu_mutex_wait");
             if (device == nullptr || device->Window() == nullptr) {
                 if (device) {
                     device->PrepareForReplacement();
                     replacedDevices.push_back(device);
                 }
+                traceStage("device_ctor_enter");
                 device = std::make_shared<VulkanDevice>(&window);
+                traceStage("device_ctor_done");
             }
             require(device->Window() == window.context, "presentation window does not match device surface");
             presenting = device;
@@ -66,68 +86,97 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
             std::uint32_t drawableWidth = 0;
             std::uint32_t drawableHeight = 0;
             window.getDrawableSize(window.context, &drawableWidth, &drawableHeight);
+            traceStage("resize_enter");
             presenting->Resize(drawableWidth, drawableHeight);
+            traceStage("resize_done");
             timing.Mark("resize");
             presentable = presenting->Presentable();
             if (buffer != nullptr) require(buffer->width == window.width && buffer->height == window.height, "display buffer extent differs from output");
         }
+        traceStage("device_setup_done");
 
         if (presentable && !syncFlip) {
             if (inFlight != 0) {
 
+                traceStage("retire_presents_enter");
                 waitedMs = presenting->RetirePresents(presenting->PresentWaitsForSlots(buffer) ? 0 : inFlight);
+                traceStage("retire_presents_done");
                 timing.Mark("inflight_wait");
             }
+            traceStage("acquire_image_enter");
             presentable = presenting->AcquireImage();
+            traceStage("acquire_image_done");
             timing.Mark("acquire_image");
         }
         if (presentable) {
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
+            traceStage("present_gpu_mutex_enter");
             std::lock_guard lock(GuestMemory::GpuMutex());
+            traceStage("present_gpu_mutex_acquired");
             timing.Mark("gpu_mutex_wait");
             if (buffer != nullptr) {
                 if (syncFlip) {
                     presenting->WaitIdle();
                     timing.Mark("device_idle_wait");
                 }
+                traceStage("present_display_buffer_enter");
                 submitted = presenting->PresentDisplayBuffer(*buffer);
+                traceStage("present_display_buffer_done");
                 timing.Mark("present_display_buffer");
             } else {
+                traceStage("present_clear_enter");
                 submitted = presenting->PresentClear(window.width, window.height, opaque);
+                traceStage("present_clear_done");
                 timing.Mark("present_clear");
             }
             if (submitted && syncFlip) {
+                traceStage("sync_finish_present_enter");
                 waitedMs = presenting->FinishPresent();
+                traceStage("sync_finish_present_done");
                 timing.Mark("render_fence_wait");
             }
             if (submitted && (syncFlip || inFlight != 0)) {
 
+                traceStage("queue_present_with_lock_enter");
                 presenting->QueuePresent();
+                traceStage("queue_present_with_lock_done");
                 timing.Mark("queue_present");
                 trailing = !syncFlip;
                 submitted = false;
             }
         }
         if (trailing) {
+            traceStage("trailing_finish_present_enter");
             waitedMs += presenting->FinishPresent();
+            traceStage("trailing_finish_present_done");
             timing.Mark("render_fence_wait");
         }
         if (submitted) {
+            traceStage("final_finish_present_enter");
             waitedMs = presenting->FinishPresent();
+            traceStage("final_finish_present_done");
             timing.Mark("render_fence_wait");
 
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
+            traceStage("final_gpu_mutex_enter");
             std::lock_guard lock(GuestMemory::GpuMutex());
+            traceStage("final_gpu_mutex_acquired");
+            traceStage("final_queue_present_enter");
             presenting->QueuePresent();
+            traceStage("final_queue_present_done");
             timing.Mark("queue_present");
         }
+        traceStage("gpu_callback_enter");
         gpuReady(context);
+        traceStage("gpu_callback_done");
         timing.Mark("release_and_callback");
         if (profile) reportPresents(waitedMs, inFlight);
         CheckFailure();
     } catch (const ProcessShutdown&) {
+        traceStage("process_shutdown");
         throw;
     } catch (...) {
+        traceStage("exception");
         ReportFailure(std::current_exception());
         throw;
     }
