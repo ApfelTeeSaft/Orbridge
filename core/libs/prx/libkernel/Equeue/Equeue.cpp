@@ -206,7 +206,16 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
         return SCE_KERNEL_ERROR_EBADF;
     }
     const std::uint64_t deadline = TimedWait::DeadlineNanos(micros);
+    const bool trace = EqueueTraceEnabled();
+    const auto traceStart = MonotonicNs();
+    std::uint64_t lastTrace = traceStart;
+    if (trace) TraceState("wait-enter", 0);
     for (;;) {
+        const auto traceNow = MonotonicNs();
+        if (trace && traceNow - lastTrace >= 2000000000ULL) {
+            TraceState("wait-pending", traceNow - traceStart);
+            lastTrace = traceNow;
+        }
         TriggerExpiredTimers(MonotonicNs());
         RefreshSocketEvents();
         int ret = 0;
@@ -238,6 +247,7 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
             it = erase ? m_events.erase(it) : std::next(it);
         }
         if (ret != 0) {
+            if (trace) TraceState("wait-complete", MonotonicNs() - traceStart);
             return ret;
         }
         if (m_closed) {
@@ -252,7 +262,10 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
         if (micros != 0 && now >= deadline) return 0;
         const bool hasSocket = HasSocketEvents();
         if (!hasTimer && !hasSocket && micros == 0) {
-            m_cond.Wait(lock);
+            // Diagnostics only: periodically wake to report missing events.
+            // WaitUntil releases m_mutex while sleeping, just like Wait.
+            if (trace) m_cond.WaitUntil(lock, TimedWait::NowNanos() + 2000000000ULL);
+            else m_cond.Wait(lock);
             continue;
         }
         std::uint64_t wake = micros == 0 ? std::numeric_limits<std::uint64_t>::max() : deadline;
