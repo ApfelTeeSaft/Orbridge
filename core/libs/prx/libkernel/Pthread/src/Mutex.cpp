@@ -219,11 +219,14 @@ int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
     if (current->_owner.load(std::memory_order_acquire) != std::this_thread::get_id())
         return sceNotPermitted;
     if (current->_type == MutexType::Recursive) {
-        if (--current->_count == 0)
+        if (--current->_count == 0) {
             current->_owner.store(std::thread::id{}, std::memory_order_release);
+            current->_ownerCaller.store(0, std::memory_order_release);
+        }
         current->_rmtx.unlock();
     } else {
         current->_owner.store(std::thread::id{}, std::memory_order_release);
+        current->_ownerCaller.store(0, std::memory_order_release);
         current->_mtx.unlock();
     }
     return 0;
