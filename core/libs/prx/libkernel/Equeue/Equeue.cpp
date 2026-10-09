@@ -8,6 +8,9 @@
 #include <cstdlib>
 #include <atomic>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 #include <limits>
@@ -317,11 +320,15 @@ int KernelEqueuePrivate::TriggerEvent(uintptr_t ident, int16_t filter, void* tri
         if (EqueueTraceEnabled()) TraceState("trigger-unregistered", 0);
         return SCE_KERNEL_ERROR_ENOENT;
     }
-    if (EqueueTraceEnabled()) TraceState("event-triggered", 0);
     if (it->filter.triggerFunc != nullptr) {
         it->filter.triggerFunc(&*it, triggerData);
     } else {
         it->triggered = true;
+    }
+    if (EqueueTraceEnabled()) {
+        static std::atomic<unsigned long long> calls{0};
+        const auto number = ++calls;
+        if (number <= 64 || number % 256 == 0) TraceState("event-triggered", 0);
     }
     m_cond.NotifyOne();
     return EQUEUE_OK;
