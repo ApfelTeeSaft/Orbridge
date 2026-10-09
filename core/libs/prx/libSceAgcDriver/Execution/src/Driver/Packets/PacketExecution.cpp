@@ -104,6 +104,7 @@ void Driver::execute(const Submission& submission) {
     ++packetProfile.submissions;
 
     bumpEpoch(&EpochBumps::submissions);
+    static const bool traceStages = std::getenv("APS5_TRACE_GPU_STAGES") != nullptr;
     for (std::size_t cursor = 0; cursor < submission.commands.size();) {
         if (packetEpoch()) bumpEpoch(&EpochBumps::packets);
         CheckFailure();
@@ -112,9 +113,12 @@ void Driver::execute(const Submission& submission) {
         const auto count = Pm4::PacketWords(header);
         const auto packet = std::span(submission.commands).subspan(cursor, count);
         const auto opcode = (header >> 8u) & 0xffu;
+        const bool traceWaitStages = traceStages && (opcode == 0x3c || opcode == 0x93);
+        const auto stageStart = traceWaitStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         auto nextCursor = cursor + count;
         std::shared_lock deviceUse(deviceReplacement, std::defer_lock);
         if (opcode != 0x3c && opcode != 0x93 && header != RenderingWaitPacketHeader && header != FlipPacketHeader) deviceUse.lock();
+        const auto stageLock = traceWaitStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
         GuestMemory::SetCurrentPacket(header == FlipPacketHeader ? 0xffffu : opcode, submission.queue);
         CaptureTrace::Log("packet submission=%llu queue=%x offset=%zu header=%08x words=%zu", static_cast<unsigned long long>(submission.serial), submission.queue, cursor, header, packet.size());
@@ -132,6 +136,7 @@ void Driver::execute(const Submission& submission) {
 
         const auto flushStart = profilePackets ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         flushBetweenPackets(submission.queue, header, opcode == 0x49 || opcode == 0x37);
+        const auto stageFlush = traceWaitStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         PacketTimer packetTimer{profilePackets, header == FlipPacketHeader ? 0xffffu : opcode, submission.queue, packetProfile, std::chrono::steady_clock::now()};
 
         if (profilePackets) {
@@ -169,6 +174,7 @@ void Driver::execute(const Submission& submission) {
 
         bool wroteOnGpu = false, endOfPipeInterrupt = false, interruptDeferred = false, drawPacket = false, sampleDump = false;
         const bool drains = preparePacketMemory(submission, queue, packet, header, opcode, wroteOnGpu, endOfPipeInterrupt, interruptDeferred, drawPacket, sampleDump);
+        const auto stagePrepared = traceWaitStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         if (endOfPipeInterrupt) {
             static const bool traceEop = [] {
                 const char* v = std::getenv("APS5_TRACE_AGC_EOP");
@@ -184,6 +190,7 @@ void Driver::execute(const Submission& submission) {
             }
         }
         traceLabel(packet, submission.queue);
+        const auto stageTraced = traceWaitStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
         const bool waitPacket = opcode == 0x3c || opcode == 0x93 || header == RenderingWaitPacketHeader;
         struct Progress {
@@ -317,6 +324,19 @@ void Driver::execute(const Submission& submission) {
             if (endOfPipeInterrupt && !interruptDeferred) AgcDriverDeliverEopInterrupt(submission.queue);
         }
         if (drawPacket || (sampleDump && wroteOnGpu)) Graphics::Recorder::CountRecordedWork();
+        if (traceWaitStages) {
+            const auto stageEnd = std::chrono::steady_clock::now();
+            const auto micros = [](auto from, auto to) {
+                return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+            };
+            std::fprintf(stderr,
+                "[gpu.stage] wait-packet serial=%llu queue=%u offset=%zu opcode=0x%x "
+                "lock_us=%lld flush_us=%lld prepare_us=%lld trace_us=%lld body_us=%lld total_us=%lld\n",
+                static_cast<unsigned long long>(submission.serial), submission.queue, cursor, opcode,
+                micros(stageStart, stageLock), micros(stageLock, stageFlush), micros(stageFlush, stagePrepared),
+                micros(stagePrepared, stageTraced), micros(stageTraced, stageEnd), micros(stageStart, stageEnd));
+            std::fflush(stderr);
+        }
         cursor = nextCursor;
     }
 
