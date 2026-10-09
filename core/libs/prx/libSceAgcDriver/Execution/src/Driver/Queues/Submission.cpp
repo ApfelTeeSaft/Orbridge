@@ -203,9 +203,25 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
         copyCommands(submission, descriptor.addr, descriptor.dw_num);
     }
     const auto copied = profile ? std::chrono::steady_clock::now() : start;
+    static const bool traceStages = std::getenv("APS5_TRACE_GPU_STAGES") != nullptr;
+    const auto afterCopy = traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     validate(submission, descriptor.addr);
+    const auto afterValidate = traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     readRegisterLists(submission);
+    const auto afterRegisters = traceStages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     waitForFlipRoom(submission);
+    if (traceStages) {
+        const auto afterRoom = std::chrono::steady_clock::now();
+        const auto micros = [](auto from, auto to) {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+        };
+        std::fprintf(stderr,
+            "[gpu.stage] submit queue=%u dwords=%zu copy_us=%lld validate_us=%lld registers_us=%lld flip_room_us=%lld total_us=%lld\n",
+            queue, submission.commands.size(), micros(start, afterCopy),
+            micros(afterCopy, afterValidate), micros(afterValidate, afterRegisters),
+            micros(afterRegisters, afterRoom), micros(start, afterRoom));
+        std::fflush(stderr);
+    }
     static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));
     const auto validated = profile ? std::chrono::steady_clock::now() : start;
