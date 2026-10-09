@@ -65,7 +65,11 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
         double waitedMs = 0;
         {
             std::unique_lock replacing(deviceReplacement, std::defer_lock);
-            if (const auto current = device.Load(); current == nullptr || current->Window() == nullptr) replacing.lock();
+            if (const auto current = device.Load(); current == nullptr || current->Window() == nullptr) {
+                traceStage("device_replacement_mutex_enter");
+                replacing.lock();
+                traceStage("device_replacement_mutex_acquired");
+            }
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
             traceStage("device_gpu_mutex_enter");
             std::lock_guard lock(GuestMemory::GpuMutex());
