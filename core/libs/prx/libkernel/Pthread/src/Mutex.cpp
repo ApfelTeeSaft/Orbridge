@@ -236,7 +236,7 @@ int APS5_VABI scePthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec)
     const auto deadline = TimedWait::DeadlineNanos(usec);
     return acquireMutex(resolveMutex(mutex, true), [=](auto& native) {
         return TimedWait::AcquireUntil(deadline, [&] { return native.try_lock(); }, [&](std::uint64_t micros) { return native.try_lock_for(std::chrono::microseconds(micros)); });
-    }, sceTimedOut, false);
+    }, sceTimedOut, false, __builtin_return_address(0));
 }
 
 int APS5_VABI scePthreadMutexTrylock(PthreadMutex* mutex) {
