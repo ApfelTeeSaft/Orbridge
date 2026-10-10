@@ -1511,6 +1511,30 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     const auto report = [&](const char* suffix) { reportDrawEnd(state, timer, built, outcome, waitedBefore, ownWaitedMs, suffix); };
     auto inputs = prepareDrawInputs(context, state, draw, shaders, outcome, timer, nullptr);
     if (inputs.nothing) return;
+    static const bool traceDrawState = [] {
+        const char* value = std::getenv("APS5_TRACE_DRAW_STATE");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    if (traceDrawState) {
+        static std::atomic<unsigned> traced{0};
+        if (traced.fetch_add(1, std::memory_order_relaxed) < 20) {
+            const auto* color = state.colors.empty() ? nullptr : &state.colors.front();
+            const auto writeMask = color != nullptr && color->exportIndex < state.blends.size()
+                ? state.blends[color->exportIndex].colorWriteMask : 0u;
+            std::fprintf(stderr,
+                "[draw.state] target=0x%llx colors=%zu render=%ux%u viewport=%.1f,%.1f %.1fx%.1f "
+                "scissor=%d,%d %ux%u write_mask=0x%x shader_exports=%zu "
+                "indices=%u instances=%u indexed=%u\n",
+                static_cast<unsigned long long>(color != nullptr ? color->address : 0ull),
+                state.colors.size(), state.renderExtent.width, state.renderExtent.height,
+                state.viewport.x, state.viewport.y, state.viewport.width, state.viewport.height,
+                state.scissor.offset.x, state.scissor.offset.y, state.scissor.extent.width,
+                state.scissor.extent.height, static_cast<unsigned>(writeMask),
+                inputs.fragmentOutputs.size(), draw.indexCount, draw.instanceCount,
+                draw.indexed ? 1u : 0u);
+            std::fflush(stderr);
+        }
+    }
     const auto* args = draw.indirect ? &*draw.indirect : nullptr;
     const auto indexBytes = inputs.indexBytes;
     timing.Mark("validate");
@@ -1893,6 +1917,33 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     if (args != nullptr) CountIndirectDraw(indirect.path, indirect.readMs, rewritten);
     auto checkRecords = indirectRecordCheck(args != nullptr ? &indirect : nullptr);
     APS5_LOG_CHARS_OUT_DEBUG("Draw recorded");
+    // Control test for the non-resident target readback: write an unmistakable
+    // magenta marker after the actual draw, while the same render pass is open.
+    // This does not exercise fragment shader output. It is intentionally restricted
+    // to runs that also request the per-draw target dump.
+    static const bool markerClear = [] {
+        const char* value = std::getenv("APS5_DIAG_DRAW_CLEAR");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    if (markerClear && dumpLimit > 0 && !targets.empty()) {
+        VkClearAttachment attachment{};
+        attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        attachment.colorAttachment = 0;
+        attachment.clearValue.color.float32[0] = 1.0f;
+        attachment.clearValue.color.float32[1] = 0.0f;
+        attachment.clearValue.color.float32[2] = 1.0f;
+        attachment.clearValue.color.float32[3] = 1.0f;
+        VkClearRect rect{};
+        rect.rect.offset = {0, 0};
+        rect.rect.extent = state.renderExtent;
+        rect.baseArrayLayer = 0;
+        rect.layerCount = 1;
+        context.Function<PFN_vkCmdClearAttachments>("vkCmdClearAttachments")(commands, 1, &attachment, 1, &rect);
+        std::fprintf(stderr, "[draw.marker] injected magenta clear target=0x%llx extent=%ux%u\n",
+            static_cast<unsigned long long>(targets.front().color.address),
+            state.renderExtent.width, state.renderExtent.height);
+        std::fflush(stderr);
+    }
     context.Resolved(&DeviceFunctions::cmdEndRenderPass, "vkCmdEndRenderPass")(commands);
     APS5_LOG_CHARS_OUT_DEBUG("Render pass ended");
     for (auto& binding : targets) {
