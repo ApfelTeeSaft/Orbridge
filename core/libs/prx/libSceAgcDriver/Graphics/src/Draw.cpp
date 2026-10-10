@@ -1912,6 +1912,42 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     APS5_LOG_CHARS_OUT_DEBUG("Resources bound");
     pushDrawConstants(*pipeline, commands, state, draw, shaders, *resources, nullptr, 0, meshArguments != nullptr ? meshArguments->DeviceAddress() : 0);
     APS5_LOG_CHARS_OUT_DEBUG("Push constants recorded");
+    // Test fragment coverage independently of the previous after-draw magenta
+    // control: seed the attachment before the actual guest draw and let the
+    // shader overwrite it, if any covered fragments survive the pipeline.
+    // Only the synchronous, dumped path is supported so readback is immediate.
+    static const bool markerPreclear = [] {
+        const char* value = std::getenv("APS5_DIAG_DRAW_PRECLEAR");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    if (markerPreclear && dumpLimit > 0 && !targets.empty()) {
+        VkClearAttachment attachment{};
+        attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        attachment.colorAttachment = 0;
+        attachment.clearValue.color.float32[0] = 1.0f;
+        attachment.clearValue.color.float32[1] = 0.0f;
+        attachment.clearValue.color.float32[2] = 1.0f;
+        attachment.clearValue.color.float32[3] = 1.0f;
+        VkClearRect rect{};
+        rect.rect.offset = {0, 0};
+        rect.rect.extent = state.renderExtent;
+        rect.baseArrayLayer = 0;
+        rect.layerCount = 1;
+        context.Function<PFN_vkCmdClearAttachments>("vkCmdClearAttachments")(commands, 1, &attachment, 1, &rect);
+        static std::atomic<unsigned> marked{0};
+        if (marked.fetch_add(1, std::memory_order_relaxed) < 20) {
+            const auto& color = targets.front().color;
+            const auto blend = color.exportIndex < state.blends.size()
+                ? state.blends[color.exportIndex].blendEnable : 0;
+            std::fprintf(stderr,
+                "[draw.preclear] magenta before draw target=0x%llx extent=%ux%u "
+                "blend=%u indices=%u instances=%u\n",
+                static_cast<unsigned long long>(color.address),
+                state.renderExtent.width, state.renderExtent.height,
+                static_cast<unsigned>(blend), draw.indexCount, draw.instanceCount);
+            std::fflush(stderr);
+        }
+    }
     recordDrawCommands(context, commands, state, draw, inputs, args != nullptr ? &indirect : nullptr, argumentBuffer, argumentOffset);
     if (meshArguments != nullptr && recorded) recorder->Keep(meshArguments);
     if (args != nullptr) CountIndirectDraw(indirect.path, indirect.readMs, rewritten);
