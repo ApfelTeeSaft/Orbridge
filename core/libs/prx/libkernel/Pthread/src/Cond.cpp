@@ -11,6 +11,12 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <stop_token>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -19,6 +25,87 @@ namespace {
 
 constexpr int sceTimedOut = static_cast<int>(0x8002003cu);
 std::mutex condInitializationMutex;
+
+// Debug aid: APS5_TRACE_COND_PENDING=1 observes outstanding guest condition
+// waits without changing their wait deadlines or notification semantics.
+bool tracePendingConds() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_TRACE_COND_PENDING");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    return enabled;
+}
+
+struct PendingCondWait {
+    std::uint32_t tid = 0;
+    const void* condition = nullptr;
+    const void* mutex = nullptr;
+    const void* caller = nullptr;
+    std::chrono::steady_clock::time_point since;
+    int recursion = 0;
+};
+
+struct CondWaitMonitor {
+    std::mutex mutex;
+    std::unordered_map<std::uint32_t, PendingCondWait> waits;
+    std::jthread reporter;
+
+    CondWaitMonitor() : reporter([this](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            if (stop.stop_requested()) break;
+            const auto now = std::chrono::steady_clock::now();
+            std::vector<PendingCondWait> pending;
+            {
+                std::lock_guard lock(mutex);
+                for (const auto& [tid, wait] : waits) {
+                    if (now - wait.since >= std::chrono::seconds(10)) pending.push_back(wait);
+                }
+            }
+            if (pending.empty()) continue;
+            std::sort(pending.begin(), pending.end(), [](const auto& a, const auto& b) {
+                return a.since < b.since;
+            });
+            std::fprintf(stderr, "[cond.pending] outstanding=%zu (>=10s)\n", pending.size());
+            for (std::size_t i = 0; i < pending.size() && i < 24; ++i) {
+                const auto& wait = pending[i];
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - wait.since).count();
+                std::fprintf(stderr,
+                    "[cond.pending] tid=%u duration_ms=%lld cond=%p mutex=%p caller=%p recursion=%d\n",
+                    static_cast<unsigned>(wait.tid), static_cast<long long>(elapsed),
+                    wait.condition, wait.mutex, wait.caller, wait.recursion);
+            }
+            if (pending.size() > 24) std::fprintf(stderr, "[cond.pending] ... additional waits omitted\n");
+            std::fflush(stderr);
+        }
+    }) {}
+};
+
+CondWaitMonitor& condWaitMonitor() {
+    static CondWaitMonitor monitor;
+    return monitor;
+}
+
+struct PendingCondRegistration {
+    std::uint32_t tid = 0;
+    PendingCondRegistration(const void* cond, const void* mutex, const void* caller, int recursion) {
+#ifdef _WIN32
+        tid = static_cast<std::uint32_t>(GetCurrentThreadId());
+#else
+        tid = static_cast<std::uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+        auto& monitor = condWaitMonitor();
+        std::lock_guard lock(monitor.mutex);
+        monitor.waits[tid] = PendingCondWait{tid, cond, mutex, caller, std::chrono::steady_clock::now(), recursion};
+    }
+    ~PendingCondRegistration() {
+        auto& monitor = condWaitMonitor();
+        std::lock_guard lock(monitor.mutex);
+        monitor.waits.erase(tid);
+    }
+    PendingCondRegistration(const PendingCondRegistration&) = delete;
+    PendingCondRegistration& operator=(const PendingCondRegistration&) = delete;
+};
 
 PthreadCond destroyedCond() {
     return reinterpret_cast<PthreadCond>(std::uintptr_t{2});
@@ -53,6 +140,10 @@ PthreadMutex lockedMutex(PthreadMutex* mutex) {
 int waitUntil(PthreadCond* cond, PthreadMutex* mutex, std::optional<std::uint64_t> deadlineNanos, const void* caller) {
     auto* c = resolveCond(cond);
     auto* m = lockedMutex(mutex);
+    std::optional<PendingCondRegistration> pending;
+    if (tracePendingConds()) {
+        pending.emplace(c, m, caller, m->_type == MutexType::Recursive ? m->_count : 1);
+    }
     bool timedOut = false;
     const auto waitStart = std::chrono::steady_clock::now();
     struct Trace {
@@ -156,12 +247,40 @@ int APS5_VABI scePthreadCondDestroy(PthreadCond* cond) {
 }
 
 int APS5_VABI scePthreadCondSignal(PthreadCond* cond) {
-    resolveCond(cond)->_cv.NotifyOne();
+    auto* resolved = resolveCond(cond);
+    if (tracePendingConds()) {
+        static std::atomic<unsigned> reports{0};
+        const unsigned count = reports.fetch_add(1, std::memory_order_relaxed);
+        if (count < 64 || count % 512 == 0) {
+#ifdef _WIN32
+            const auto tid = static_cast<unsigned>(GetCurrentThreadId());
+#else
+            const auto tid = 0u;
+#endif
+            std::fprintf(stderr, "[cond.notify] signal tid=%u cond=%p\n", tid, static_cast<void*>(resolved));
+            std::fflush(stderr);
+        }
+    }
+    resolved->_cv.NotifyOne();
     return 0;
 }
 
 int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond) {
-    resolveCond(cond)->_cv.NotifyAll();
+    auto* resolved = resolveCond(cond);
+    if (tracePendingConds()) {
+        static std::atomic<unsigned> reports{0};
+        const unsigned count = reports.fetch_add(1, std::memory_order_relaxed);
+        if (count < 64 || count % 512 == 0) {
+#ifdef _WIN32
+            const auto tid = static_cast<unsigned>(GetCurrentThreadId());
+#else
+            const auto tid = 0u;
+#endif
+            std::fprintf(stderr, "[cond.notify] broadcast tid=%u cond=%p\n", tid, static_cast<void*>(resolved));
+            std::fflush(stderr);
+        }
+    }
+    resolved->_cv.NotifyAll();
     return 0;
 }
 
