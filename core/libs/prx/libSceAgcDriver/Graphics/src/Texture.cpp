@@ -3474,11 +3474,18 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         const char* value = std::getenv("APS5_DUMP_STORAGE");
         return value ? std::strtoull(value, nullptr, 16) : 0ull;
     }();
+    static const bool diagnosticAll = [] {
+        const char* value = std::getenv("APS5_DUMP_STORAGE");
+        return value && std::strcmp(value, "all") == 0;
+    }();
     static const bool forceCpuDump = [] {
         const char* value = std::getenv("APS5_DUMP_STORAGE_FORCE_CPU");
         return value && *value && !(value[0] == '0' && value[1] == '\0');
     }();
-    const bool diagnosticCapture = forceCpuDump && diagnosticTarget != 0 && diagnosticTarget == descriptor.baseAddress;
+    const bool diagnosticMatch = (diagnosticTarget != 0 && diagnosticTarget == descriptor.baseAddress) ||
+        (diagnosticAll && descriptor.width == 1920 && descriptor.height == 1080 &&
+         storageFormat == VK_FORMAT_R8G8B8A8_UNORM);
+    const bool diagnosticCapture = forceCpuDump && diagnosticMatch;
     if (keep.empty()) {
         if (diagnosticCapture) {
             std::fprintf(stderr, "[storage.dump] image=0x%llx skipped: CPU overwrote all selected blocks\n",
@@ -3686,12 +3693,23 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             detiler.Dispatch(commands, descriptor.tileMode, elementBytes, linear.Handle(), geometry.LinearLayerOffset(layer) + mip.linearOffset, tiled.Handle(), geometry.GuestLayerOffset(layer) + mip.tiledOffset, mip, true, layer, geometry.thick);
         }
     }
-    // Debug aid: APS5_DUMP_STORAGE=<hex address> saves that storage image's first mip after each of
-    // its first 8 write-backs as storage_<address>_<n>.raw (u32 width, height, VkFormat, then rows).
-    static const std::uint64_t dumpAddress = [] { const char* text = std::getenv("APS5_DUMP_STORAGE"); return text ? std::strtoull(text, nullptr, 16) : 0ull; }();
+    // APS5_DUMP_STORAGE=<hex address> keeps the original focused capture behavior.
+    // APS5_DUMP_STORAGE=all captures up to two first-mip write-backs per 1920x1080 RGBA8
+    // image (eight total), so changing heap addresses cannot hide the intermediate targets.
+    static std::mutex dumpStateMutex;
+    static std::map<std::uint64_t, int> dumpPerImage;
     static int dumps = 0;
+    int dumpIndex = -1;
+    if (diagnosticMatch) {
+        std::lock_guard lock(dumpStateMutex);
+        int& perImage = dumpPerImage[descriptor.baseAddress];
+        if (dumps < 8 && perImage < (diagnosticAll ? 2 : 8)) {
+            dumpIndex = dumps++;
+            ++perImage;
+        }
+    }
     std::unique_ptr<Buffer> dump;
-    if (dumpAddress != 0 && descriptor.baseAddress == dumpAddress && dumps < 8) {
+    if (dumpIndex >= 0) {
         dump = std::make_unique<Buffer>(context, static_cast<std::size_t>(mips[0].linearSize), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         CopyBuffer(context, commands, linear.Handle(), mips[0].linearOffset, dump->Handle(), 0, mips[0].linearSize);
@@ -3712,14 +3730,23 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
     if (profile) Profile().storageGpu += timer.lap();
     if (dump) {
         char name[64];
-        std::snprintf(name, sizeof(name), "storage_%llx_%d.raw", static_cast<unsigned long long>(descriptor.baseAddress), dumps++);
+        std::snprintf(name, sizeof(name), "storage_%llx_%d.raw", static_cast<unsigned long long>(descriptor.baseAddress), dumpIndex);
         if (std::FILE* file = std::fopen(name, "wb")) {
             const std::uint32_t header[3] = {mips[0].pitchBytes / static_cast<std::uint32_t>(elementBytes), mips[0].height, static_cast<std::uint32_t>(storageFormat)};
             const auto wroteHeader = std::fwrite(header, sizeof(header), 1, file);
             const auto wrotePixels = std::fwrite(dump->Bytes().data(), 1, dump->Bytes().size(), file);
             const auto closeResult = std::fclose(file);
-            std::fprintf(stderr, "[storage.dump] file=%s header=%zu pixels=%zu/%zu close=%d\n",
-                name, wroteHeader, wrotePixels, dump->Bytes().size(), closeResult);
+            std::size_t nonBlack = 0;
+            if (storageFormat == VK_FORMAT_R8G8B8A8_UNORM) {
+                const auto pixels = dump->Bytes();
+                for (std::size_t offset = 0; offset + 3 < pixels.size(); offset += 4) {
+                    if (pixels[offset] != std::byte{0} || pixels[offset + 1] != std::byte{0} ||
+                        pixels[offset + 2] != std::byte{0}) ++nonBlack;
+                }
+            }
+            std::fprintf(stderr,
+                "[storage.dump] file=%s header=%zu pixels=%zu/%zu close=%d rgba8_nonblack=%zu\n",
+                name, wroteHeader, wrotePixels, dump->Bytes().size(), closeResult, nonBlack);
             std::fflush(stderr);
         } else {
             std::fprintf(stderr, "[storage.dump] could not create %s\n", name);
