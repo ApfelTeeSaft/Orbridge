@@ -3467,7 +3467,24 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             MarkShadowed(*shadowImport, shadowed, GuestMemory::TrackerGeneration());
         }
     };
+    // The fast host-import write-back does not enter the CPU readback code that
+    // implements APS5_DUMP_STORAGE. Redirect only the selected image when this
+    // explicit diagnostic option is enabled; normal rendering is unchanged.
+    static const std::uint64_t diagnosticTarget = [] {
+        const char* value = std::getenv("APS5_DUMP_STORAGE");
+        return value ? std::strtoull(value, nullptr, 16) : 0ull;
+    }();
+    static const bool forceCpuDump = [] {
+        const char* value = std::getenv("APS5_DUMP_STORAGE_FORCE_CPU");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    const bool diagnosticCapture = forceCpuDump && diagnosticTarget != 0 && diagnosticTarget == descriptor.baseAddress;
     if (keep.empty()) {
+        if (diagnosticCapture) {
+            std::fprintf(stderr, "[storage.dump] image=0x%llx skipped: CPU overwrote all selected blocks\n",
+                static_cast<unsigned long long>(descriptor.baseAddress));
+            std::fflush(stderr);
+        }
         // Every selected block was written by the CPU since the layer's generation: nothing to
         // store, the keys stay as they are, and the image is stale there (re-uploaded at its next
         // use, never from a matching `original`).
@@ -3476,7 +3493,14 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         settle(true);
         return;
     }
-    if (const auto* import = HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) {
+    const auto* import = HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
+    if (diagnosticCapture) {
+        std::fprintf(stderr, "[storage.dump] image=0x%llx selected_ranges=%zu host_import=%d: %s\n",
+            static_cast<unsigned long long>(descriptor.baseAddress), keep.size(), import != nullptr ? 1 : 0,
+            import != nullptr ? "forcing CPU readback for selected image" : "CPU fallback already selected");
+        std::fflush(stderr);
+    }
+    if (import != nullptr && !diagnosticCapture) {
         if (blockUnits) {
             // The kept blocks alone pass through the retiler (windows of their slices).
             shadowImport = import;
@@ -3609,6 +3633,11 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
     // holds now. Its selected units are dropped instead. APS5_NO_UNREGISTERED_DROP=1 stores.
     static const bool unregisteredDrop = std::getenv("APS5_NO_UNREGISTERED_DROP") == nullptr;
     if (unregisteredDrop && !RegisteredReadableCovers(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) {
+        if (diagnosticCapture) {
+            std::fprintf(stderr, "[storage.dump] image=0x%llx skipped: guest memory unregistered\n",
+                static_cast<unsigned long long>(descriptor.baseAddress));
+            std::fflush(stderr);
+        }
         static std::atomic<int> reports{0};
         if (reports.fetch_add(1) < 4) std::fprintf(stderr, "[gpu] storage image 0x%llx+0x%llx: memory no longer registered; %zu pending ranges dropped\n", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), keep.size());
         unregisteredDropped.fetch_add(1, std::memory_order_relaxed);
@@ -3686,9 +3715,15 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         std::snprintf(name, sizeof(name), "storage_%llx_%d.raw", static_cast<unsigned long long>(descriptor.baseAddress), dumps++);
         if (std::FILE* file = std::fopen(name, "wb")) {
             const std::uint32_t header[3] = {mips[0].pitchBytes / static_cast<std::uint32_t>(elementBytes), mips[0].height, static_cast<std::uint32_t>(storageFormat)};
-            std::fwrite(header, sizeof(header), 1, file);
-            std::fwrite(dump->Bytes().data(), 1, dump->Bytes().size(), file);
-            std::fclose(file);
+            const auto wroteHeader = std::fwrite(header, sizeof(header), 1, file);
+            const auto wrotePixels = std::fwrite(dump->Bytes().data(), 1, dump->Bytes().size(), file);
+            const auto closeResult = std::fclose(file);
+            std::fprintf(stderr, "[storage.dump] file=%s header=%zu pixels=%zu/%zu close=%d\n",
+                name, wroteHeader, wrotePixels, dump->Bytes().size(), closeResult);
+            std::fflush(stderr);
+        } else {
+            std::fprintf(stderr, "[storage.dump] could not create %s\n", name);
+            std::fflush(stderr);
         }
     }
     // Store only the kept ranges' blocks that changed, so concurrent CPU writes to untouched texels
