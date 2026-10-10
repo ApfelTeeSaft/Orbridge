@@ -1638,6 +1638,33 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     const bool recordable = recordDraws && recorder != nullptr && dumpLimit == 0 && std::all_of(targets.begin(), targets.end(), [](const TargetBinding& binding) { return binding.resident != nullptr; });
     auto resolved = resolveDrawResources(context, state, draw, shaders, snapshots, indexBytes, recordable, outcome, timer);
     auto& resources = resolved.resources;
+    // Opt-in, bounded input probe for black framebuffer triage. This samples
+    // already-decoded guest binding ranges, not GPU framebuffer pixels; sparse
+    // zero-filled resources may be normal while a title is still initializing.
+    static const bool traceDrawInputs = [] {
+        const char* value = std::getenv("APS5_TRACE_DRAW_INPUTS");
+        return value && *value && !(value[0] == '0' && value[1] == '\0');
+    }();
+    if (traceDrawInputs) {
+        static std::atomic<unsigned> traced{0};
+        const unsigned index = traced.fetch_add(1, std::memory_order_relaxed);
+        if (index < 12) {
+            const auto& first = state.colors.empty() ? state.color : state.colors.front();
+            const auto description = resources->Describe();
+            std::fprintf(stderr,
+                "[draw.inputs] #%u target=0x%llx color_targets=%zu shader_stages=0x%x "
+                "index_count=%u instance_count=%u indexed=%u topology=%u cull=0x%x "
+                "viewport=%.1f,%.1f,%.1f,%.1f resources=%.*s%s\n",
+                index, static_cast<unsigned long long>(first.address), state.colors.size(),
+                static_cast<unsigned>(inputs.shaderStages), draw.indexCount, draw.instanceCount,
+                draw.indexed ? 1u : 0u, static_cast<unsigned>(state.topology),
+                static_cast<unsigned>(state.cullMode),
+                state.viewport.x, state.viewport.y, state.viewport.width, state.viewport.height,
+                static_cast<int>(std::min<std::size_t>(description.size(), 2048)),
+                description.c_str(), description.size() > 2048 ? " [truncated]" : "");
+            std::fflush(stderr);
+        }
+    }
     const auto& contentKey = resolved.contentKey;
     const bool cacheable = resolved.cacheable;
     built = resolved.built;
